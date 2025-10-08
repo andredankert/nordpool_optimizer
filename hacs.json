@@ -1,6 +1,5 @@
 {
   "name": "Nordpool Optimizer",
   "render_readme": true,
-  "zip_release": true,
-  "filename": "nordpool_optimizer.zip"
+  "zip_release": false
 }
