@@ -263,37 +263,38 @@ class NordpoolOptimizerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Add file reader for testing
         price_entities[NAME_FILE_READER] = "File Reader (for testing)"
 
-        # Look for Nordpool entities
-        if NORDPOOL_DOMAIN:
-            for entity_id, state in self.hass.states.async_all().items():
-                if (
-                    entity_id.startswith(f"sensor.{NORDPOOL_DOMAIN}")
-                    and "raw_today" in state.attributes
-                ):
-                    price_entities[entity_id] = (
-                        state.attributes.get("friendly_name") or entity_id
-                    )
+        try:
+            # Look for Nordpool entities
+            if NORDPOOL_DOMAIN:
+                for entity_id in self.hass.states.async_entity_ids():
+                    if entity_id.startswith(f"sensor.{NORDPOOL_DOMAIN}"):
+                        state = self.hass.states.get(entity_id)
+                        if state and "raw_today" in state.attributes:
+                            price_entities[entity_id] = (
+                                state.attributes.get("friendly_name") or entity_id
+                            )
 
-        # Look for ENTSO-e entities
-        if ENTOSOE_DOMAIN:
-            for entity_id, state in self.hass.states.async_all().items():
-                if (
-                    entity_id.startswith(f"sensor.{ENTOSOE_DOMAIN}")
-                    and "prices" in state.attributes
-                ):
-                    price_entities[entity_id] = (
-                        state.attributes.get("friendly_name") or entity_id
-                    )
+            # Look for ENTSO-e entities
+            if ENTOSOE_DOMAIN:
+                for entity_id in self.hass.states.async_entity_ids():
+                    if entity_id.startswith(f"sensor.{ENTOSOE_DOMAIN}"):
+                        state = self.hass.states.get(entity_id)
+                        if state and "prices" in state.attributes:
+                            price_entities[entity_id] = (
+                                state.attributes.get("friendly_name") or entity_id
+                            )
 
-        # Fallback to any sensor with price data
-        for entity_id, state in self.hass.states.async_all().items():
-            if entity_id.startswith("sensor.") and (
-                "raw_today" in state.attributes or "prices" in state.attributes
-            ):
-                if entity_id not in price_entities:
-                    price_entities[entity_id] = (
-                        state.attributes.get("friendly_name") or entity_id
-                    )
+            # Fallback to any sensor with price data
+            for entity_id in self.hass.states.async_entity_ids():
+                if entity_id.startswith("sensor.") and entity_id not in price_entities:
+                    state = self.hass.states.get(entity_id)
+                    if state and ("raw_today" in state.attributes or "prices" in state.attributes):
+                        price_entities[entity_id] = (
+                            state.attributes.get("friendly_name") or entity_id
+                        )
+
+        except Exception as e:
+            _LOGGER.exception("Error getting price entities: %s", e)
 
         return price_entities
 
