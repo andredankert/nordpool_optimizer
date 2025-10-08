@@ -2,12 +2,12 @@
   "domain": "nordpool_optimizer",
   "name": "Nordpool Optimizer",
   "after_dependencies": ["nordpool", "entsoe"],
-  "codeowners": ["@dala318"],
+  "codeowners": ["@andredankert"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://github.com/dala318/nordpool_optimizer",
+  "documentation": "https://github.com/andredankert/nordpool_optimizer",
   "iot_class": "calculated",
-  "issue_tracker": "https://github.com/dala318/nordpool_optimizer/issues",
+  "issue_tracker": "https://github.com/andredankert/nordpool_optimizer/issues",
   "requirements": [],
-  "version": "2.2.0"
+  "version": "3.0.0"
 }
