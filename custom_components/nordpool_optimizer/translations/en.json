@@ -1,0 +1,74 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "description": "Setup a Nordpool Optimizer device",
+                "data": {
+                    "device_name": "Device name",
+                    "prices_entity": "Nordpool or ENTSO-e price entity"
+                }
+            },
+            "mode": {
+                "description": "Configure optimization mode for {device_name}",
+                "data": {
+                    "mode": "Optimization mode",
+                    "duration": "Duration (hours)"
+                }
+            },
+            "absolute": {
+                "description": "Configure absolute price threshold for {device_name} (duration: {duration}h)",
+                "data": {
+                    "price_threshold": "Price threshold (run when average price below this value)"
+                }
+            },
+            "daily": {
+                "description": "Configure daily slot optimization for {device_name} (duration: {duration}h)",
+                "data": {
+                    "slot_type": "Slot type"
+                }
+            },
+            "time_window": {
+                "description": "Optional: Restrict optimization to specific hours for {device_name} (mode: {mode})",
+                "data": {
+                    "time_window_enabled": "Enable time window restriction",
+                    "time_window": "Time window (HH:MM-HH:MM, e.g. 22:00-06:00)"
+                }
+            },
+            "reconfigure": {
+                "description": "Reconfigure the optimizer settings",
+                "data": {
+                    "device_name": "Device name",
+                    "mode": "Optimization mode",
+                    "duration": "Duration (hours)",
+                    "price_threshold": "Price threshold",
+                    "slot_type": "Slot type",
+                    "time_window_enabled": "Enable time window restriction",
+                    "time_window": "Time window (HH:MM-HH:MM)"
+                }
+            }
+        },
+        "error": {
+            "invalid_price_entity": "Selected price entity is not valid",
+            "invalid_time_format": "Time window format must be HH:MM-HH:MM",
+            "invalid_start_time": "Invalid start time format",
+            "invalid_end_time": "Invalid end time format"
+        },
+        "abort": {
+            "already_configured": "Device with this name and price entity is already configured"
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "data": {
+                    "mode": "Optimization mode",
+                    "duration": "Duration (hours)",
+                    "price_threshold": "Price threshold",
+                    "slot_type": "Slot type",
+                    "time_window_enabled": "Enable time window restriction",
+                    "time_window": "Time window (HH:MM-HH:MM)"
+                }
+            }
+        }
+    }
+}

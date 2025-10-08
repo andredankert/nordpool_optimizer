@@ -1,4 +1,4 @@
-# nordpool_planner custom component for Home Assistant
+# nordpool_optimizer custom component for Home Assistant
 
 Requires https://github.com/custom-components/nordpool (not tested with new [HA native Nordpool](https://www.home-assistant.io/integrations/nordpool/), likely the sensor attributes are not same as the custom integration) or https://github.com/JaccoR/hass-entso-e
 
@@ -15,14 +15,14 @@ Apart from potentially saving some money, this kind of temporal shifting of cons
 1. Install and configure https://github.com/custom-components/nordpool first.
 2. Go to HACS -> Integrations
 3. Click the three dots on the top right and select `Custom Repositories`
-4. Enter `https://github.com/dala318/nordpool_planner` as repository, select the category `Integration` and click Add
-5. A new custom integration shows up for installation (Nordpool Planner) - install it
+4. Enter `https://github.com/dala318/nordpool_optimizer` as repository, select the category `Integration` and click Add
+5. A new custom integration shows up for installation (Nordpool Optimizer) - install it
 6. Restart Home Assistant
 
 ### Option 2: Manual
 
 1. Install and configure https://github.com/custom-components/nordpool first.
-2. Copy the `nordpool_planner` folder to HA `<config_dir>/custom_components/nordpool_planner/`
+2. Copy the `nordpool_optimizer` folder to HA `<config_dir>/custom_components/nordpool_optimizer/`
 3. Restart Home Assistant
 
 ### Configuration

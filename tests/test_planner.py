@@ -2,7 +2,7 @@
 
 from unittest import mock
 
-from custom_components.nordpool_planner import NordpoolPlanner
+from custom_components.nordpool_optimizer import NordpoolOptimizer
 
 # from pytest_homeassistant_custom_component.async_mock import patch
 # from pytest_homeassistant_custom_component.common import (
@@ -11,11 +11,11 @@ from custom_components.nordpool_planner import NordpoolPlanner
 #     mock_integration,
 #     mock_platform,
 # )
-from custom_components.nordpool_planner.const import (
-    CONF_DURATION_ENTITY,
+from custom_components.nordpool_optimizer.const import (
+    CONF_DEVICE_NAME,
+    CONF_DURATION,
+    CONF_MODE,
     CONF_PRICES_ENTITY,
-    CONF_SEARCH_LENGTH_ENTITY,
-    CONF_TYPE,
     DOMAIN,
 )
 import pytest

@@ -1,0 +1,13 @@
+{
+  "domain": "nordpool_optimizer",
+  "name": "Nordpool Optimizer",
+  "after_dependencies": ["nordpool", "entsoe"],
+  "codeowners": ["@dala318"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/dala318/nordpool_optimizer",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/dala318/nordpool_optimizer/issues",
+  "requirements": [],
+  "version": "2.2.0"
+}
