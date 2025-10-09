@@ -222,22 +222,29 @@ class NordpoolOptimizer:
         _LOGGER.debug("Updating optimizer for %s", self.device_name)
 
         # Update price data
-        if not self._prices_entity.update(self._hass) or not self._prices_entity.valid:
+        price_updated = self._prices_entity.update(self._hass)
+        _LOGGER.debug("Price entity update result: %s, valid: %s", price_updated, self._prices_entity.valid)
+
+        if not price_updated or not self._prices_entity.valid:
+            _LOGGER.warning("Price entity %s failed to update or is invalid", self._prices_entity.unique_id)
             self.set_unavailable()
             self._optimizer_status.status = OptimizerStates.Error
             self._optimizer_status.running_text = "No valid Price data"
             return
 
         # Validate configuration
+        _LOGGER.debug("Configuration check - duration: %s, mode: %s, price_threshold: %s",
+                     self.duration, self.mode, getattr(self, 'price_threshold', 'N/A'))
+
         if not self.duration or self.duration <= 0:
-            _LOGGER.warning("Aborting update since no valid Duration")
+            _LOGGER.warning("Aborting update since no valid Duration: %s", self.duration)
             self._optimizer_status.status = OptimizerStates.Error
             self._optimizer_status.running_text = "No valid Duration data"
             return
 
         # Mode-specific validation
         if self.mode == CONF_MODE_ABSOLUTE and (not self.price_threshold):
-            _LOGGER.warning("Aborting update since no price threshold for absolute mode")
+            _LOGGER.warning("Aborting update since no price threshold for absolute mode: %s", self.price_threshold)
             self._optimizer_status.status = OptimizerStates.Error
             self._optimizer_status.running_text = "No valid price threshold"
             return
