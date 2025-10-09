@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
+import os
+from pathlib import Path
 
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
 from homeassistant.const import (
@@ -147,7 +150,7 @@ class NordpoolOptimizer:
         self.time_window = self._config.data.get(CONF_TIME_WINDOW, "")
 
         # Input entities
-        self._prices_entity = PricesEntity(self._config.data[CONF_PRICES_ENTITY])
+        self._prices_entity = PricesEntity(self._config.data[CONF_PRICES_ENTITY], hass)
 
         # Output entities
         self._output_listeners: dict[str, NordpoolOptimizerEntity] = {}
@@ -166,6 +169,15 @@ class NordpoolOptimizer:
 
     async def async_setup(self):
         """Post initialization setup."""
+        # Try to load cached price data first for immediate availability
+        cache_loaded = self._prices_entity.load_cache()
+        if cache_loaded:
+            _LOGGER.debug("Loaded cached price data for %s, running initial optimization", self.device_name)
+            # Run initial optimization with cached data (don't fetch new data)
+            self.update(force_price_update=False)
+        else:
+            _LOGGER.debug("No valid cache found for %s, will wait for first price update", self.device_name)
+
         # Ensure an update is done on every hour for optimization calculations
         self._hourly_update = async_track_time_change(
             self._hass, self.scheduled_update, minute=0, second=0
@@ -235,13 +247,18 @@ class NordpoolOptimizer:
         for listener in self._output_listeners.values():
             listener.update_callback()
 
-    def update(self):
+    def update(self, force_price_update: bool = True):
         """Optimizer update call function."""
         _LOGGER.debug("Updating optimizer for %s", self.device_name)
 
-        # Update price data
-        price_updated = self._prices_entity.update(self._hass)
-        _LOGGER.debug("Price entity update result: %s, valid: %s", price_updated, self._prices_entity.valid)
+        # Update price data (unless we're using cached data)
+        if force_price_update:
+            price_updated = self._prices_entity.update(self._hass)
+            _LOGGER.debug("Price entity update result: %s, valid: %s", price_updated, self._prices_entity.valid)
+        else:
+            # Using cached data, just check if valid
+            price_updated = self._prices_entity.valid
+            _LOGGER.debug("Using cached price data, valid: %s", self._prices_entity.valid)
 
         if not price_updated or not self._prices_entity.valid:
             _LOGGER.warning("Price entity %s failed to update or is invalid", self._prices_entity.unique_id)
@@ -509,10 +526,14 @@ class NordpoolOptimizer:
 class PricesEntity:
     """Representation for Nordpool state."""
 
-    def __init__(self, unique_id: str) -> None:
+    def __init__(self, unique_id: str, hass: HomeAssistant = None) -> None:
         """Initialize state tracker."""
         self._unique_id = unique_id
         self._np = None
+        self._hass = hass
+        self._cache_file = None
+        if hass:
+            self._cache_file = Path(hass.config.config_dir) / "nordpool_optimizer_cache.json"
 
     def as_dict(self):
         """For diagnostics serialization."""
@@ -562,6 +583,75 @@ class PricesEntity:
                         return price["value"]
         return None
 
+    def load_cache(self) -> bool:
+        """Load price data from cache file."""
+        if not self._cache_file or not self._cache_file.exists():
+            _LOGGER.debug("No cache file found at %s", self._cache_file)
+            return False
+
+        try:
+            with open(self._cache_file, 'r') as f:
+                cache_data = json.load(f)
+
+            # Check if cache is for our entity and is recent enough (max 6 hours old)
+            if (cache_data.get('entity_id') != self._unique_id or
+                not self._is_cache_valid(cache_data.get('timestamp'))):
+                _LOGGER.debug("Cache invalid or too old for entity %s", self._unique_id)
+                return False
+
+            # Create a mock state object from cached data
+            class MockState:
+                def __init__(self, attributes):
+                    self.attributes = attributes
+
+            self._np = MockState(cache_data['attributes'])
+            _LOGGER.debug("Successfully loaded cached price data for %s", self._unique_id)
+            return True
+
+        except (json.JSONDecodeError, KeyError, OSError) as e:
+            _LOGGER.warning("Failed to load cache file: %s", e)
+            return False
+
+    def save_cache(self) -> None:
+        """Save current price data to cache file."""
+        if not self._cache_file or not self._np:
+            return
+
+        try:
+            cache_data = {
+                'entity_id': self._unique_id,
+                'timestamp': dt_util.now().isoformat(),
+                'attributes': dict(self._np.attributes)
+            }
+
+            # Ensure cache directory exists
+            self._cache_file.parent.mkdir(exist_ok=True)
+
+            with open(self._cache_file, 'w') as f:
+                json.dump(cache_data, f, default=str)
+
+            _LOGGER.debug("Saved price data cache for %s", self._unique_id)
+
+        except (OSError, TypeError) as e:
+            _LOGGER.warning("Failed to save cache file: %s", e)
+
+    def _is_cache_valid(self, timestamp_str: str) -> bool:
+        """Check if cache timestamp is recent enough."""
+        if not timestamp_str:
+            return False
+
+        try:
+            cache_time = dt_util.parse_datetime(timestamp_str)
+            if not cache_time:
+                return False
+
+            # Cache is valid if less than 6 hours old
+            age = dt_util.now() - cache_time
+            return age.total_seconds() < 6 * 3600
+
+        except (ValueError, TypeError):
+            return False
+
     def update(self, hass: HomeAssistant) -> bool:
         """Update price in storage."""
         if self._unique_id == NAME_FILE_READER:
@@ -580,6 +670,8 @@ class PricesEntity:
                 "Nordpool sensor %s was updated successfully", self._unique_id
             )
             self._np = np
+            # Save to cache when successfully updated
+            self.save_cache()
 
         return self._np is not None
 

@@ -151,9 +151,10 @@ class NordpoolOptimizerTimerEntity(NordpoolOptimizerEntity, SensorEntity):
             "minutes_value": self.native_value,  # For automation use
         }
 
-        if next_start:
+        # Only add datetime attributes if they are valid datetime objects
+        if next_start and isinstance(next_start, dt.datetime):
             attributes["next_optimal_start"] = next_start
-        if current_end:
+        if current_end and isinstance(current_end, dt.datetime):
             attributes["current_period_end"] = current_end
 
         # Add mode-specific attributes
