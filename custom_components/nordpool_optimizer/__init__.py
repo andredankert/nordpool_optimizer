@@ -125,6 +125,7 @@ class NordpoolOptimizer:
     """Optimizer base class."""
 
     _hourly_update = None
+    _minutely_update = None
 
     def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry) -> None:
         """Initialize optimizer."""
@@ -165,9 +166,14 @@ class NordpoolOptimizer:
 
     async def async_setup(self):
         """Post initialization setup."""
-        # Ensure an update is done on every hour
+        # Ensure an update is done on every hour for optimization calculations
         self._hourly_update = async_track_time_change(
             self._hass, self.scheduled_update, minute=0, second=0
+        )
+
+        # Update display every minute for live countdown
+        self._minutely_update = async_track_time_change(
+            self._hass, self.minutely_display_update, second=0
         )
 
     @property
@@ -189,6 +195,10 @@ class NordpoolOptimizer:
         """Cleanup by removing event listeners."""
         for listener in self._state_change_listeners:
             listener()
+        if self._hourly_update:
+            self._hourly_update()
+        if self._minutely_update:
+            self._minutely_update()
 
     def register_output_listener_entity(
         self, entity: NordpoolOptimizerEntity, conf_key=""
@@ -216,6 +226,14 @@ class NordpoolOptimizer:
         """Scheduled updates callback."""
         _LOGGER.debug("Scheduled callback")
         self.update()
+
+    def minutely_display_update(self, _):
+        """Minutely display update callback - only updates entity displays, no recalculation."""
+        _LOGGER.debug("Minutely display update for %s", self.device_name)
+
+        # Only notify listeners to update their display, don't recalculate optimization
+        for listener in self._output_listeners.values():
+            listener.update_callback()
 
     def update(self):
         """Optimizer update call function."""
@@ -256,9 +274,14 @@ class NordpoolOptimizer:
         # Calculate optimal periods based on mode
         now = dt_util.now()
         if self.mode == CONF_MODE_ABSOLUTE:
-            self._current_optimal_periods = self._calculate_absolute_periods(now)
+            periods = self._calculate_absolute_periods(now)
         elif self.mode == CONF_MODE_DAILY:
-            self._current_optimal_periods = self._calculate_daily_periods(now)
+            periods = self._calculate_daily_periods(now)
+        else:
+            periods = []
+
+        # Merge consecutive periods for cleaner display
+        self._current_optimal_periods = self._merge_consecutive_periods(periods)
 
         self._last_update = now
 
@@ -410,6 +433,50 @@ class NordpoolOptimizer:
         except (ValueError, AttributeError):
             _LOGGER.warning("Invalid time window format: %s", self.time_window)
             return True
+
+    def _merge_consecutive_periods(self, periods: list[OptimalPeriod]) -> list[OptimalPeriod]:
+        """Merge consecutive or overlapping periods into single periods."""
+        if not periods:
+            return []
+
+        # Sort periods by start time
+        sorted_periods = sorted(periods, key=lambda p: p.start_time)
+        merged = []
+        current = sorted_periods[0]
+
+        for next_period in sorted_periods[1:]:
+            # Check if periods are consecutive or overlapping
+            if current.end_time >= next_period.start_time:
+                # Merge periods - extend current to include next period
+                # Calculate weighted average price for merged period
+                current_duration = (current.end_time - current.start_time).total_seconds() / 3600
+                next_duration = (next_period.end_time - next_period.start_time).total_seconds() / 3600
+                total_duration = current_duration + next_duration
+
+                if total_duration > 0:
+                    weighted_price = (
+                        current.average_price * current_duration +
+                        next_period.average_price * next_duration
+                    ) / total_duration
+                else:
+                    weighted_price = current.average_price
+
+                # Create merged period
+                current = OptimalPeriod(
+                    start_time=current.start_time,
+                    end_time=max(current.end_time, next_period.end_time),
+                    average_price=weighted_price
+                )
+            else:
+                # Periods are not consecutive - add current and start new
+                merged.append(current)
+                current = next_period
+
+        # Add the last period
+        merged.append(current)
+
+        _LOGGER.debug("Merged %d periods into %d consecutive periods", len(periods), len(merged))
+        return merged
 
     def is_currently_optimal(self, now: dt.datetime) -> bool:
         """Check if current time is in an optimal period."""
