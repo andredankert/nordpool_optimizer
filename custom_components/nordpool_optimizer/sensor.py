@@ -76,14 +76,20 @@ class NordpoolOptimizerTimerEntity(NordpoolOptimizerEntity, SensorEntity):
             end_time = self._optimizer.get_current_period_end(now)
             if end_time:
                 remaining = end_time - now
-                return max(0, int(remaining.total_seconds() / 60))
+                minutes = max(0, int(remaining.total_seconds() / 60))
+                _LOGGER.debug("Current optimal period, remaining: %s seconds = %s minutes",
+                             remaining.total_seconds(), minutes)
+                return minutes
             return 0
         else:
             # Return negative minutes until next optimization period
             next_start = self._optimizer.get_next_optimal_start(now)
             if next_start:
                 countdown = next_start - now
-                return -max(0, int(countdown.total_seconds() / 60))
+                minutes = -max(0, int(countdown.total_seconds() / 60))
+                _LOGGER.debug("Next optimal start in: %s seconds = %s minutes",
+                             countdown.total_seconds(), minutes)
+                return minutes
             return 0
 
     @property
