@@ -34,8 +34,7 @@ async def async_setup_entry(
             optimizer,
             entity_description=SensorEntityDescription(
                 key="timer",
-                device_class=SensorDeviceClass.DURATION,
-                native_unit_of_measurement=UnitOfTime.MINUTES,
+                # Remove device class to allow custom formatting
             ),
         )
     )
@@ -113,6 +112,11 @@ class NordpoolOptimizerTimerEntity(NordpoolOptimizerEntity, SensorEntity):
             return f"-{hours:02d}h{minutes:02d}m"
 
     @property
+    def unit_of_measurement(self) -> str | None:
+        """Return None to prevent unit display since we have custom formatting."""
+        return None
+
+    @property
     def icon(self) -> str:
         """Return dynamic icon based on state."""
         value = self.native_value
@@ -138,6 +142,7 @@ class NordpoolOptimizerTimerEntity(NordpoolOptimizerEntity, SensorEntity):
             "duration_hours": self._optimizer.duration,
             "currently_optimal": self._optimizer.is_currently_optimal(now),
             "price_sensor": self._optimizer.price_sensor_id,
+            "minutes_value": self.native_value,  # For automation use
         }
 
         if next_start:
