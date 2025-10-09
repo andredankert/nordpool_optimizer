@@ -37,6 +37,26 @@ CONF_SLOT_TYPE_LIST = [CONF_SLOT_TYPE_CONSECUTIVE, CONF_SLOT_TYPE_SEPARATE]
 CONF_TIME_WINDOW = "time_window"
 CONF_TIME_WINDOW_ENABLED = "time_window_enabled"
 
+# Price graph entity configuration
+CONF_ENABLE_PRICE_GRAPH = "enable_price_graph"
+CONF_GRAPH_HOURS_AHEAD = "graph_hours_ahead"
+GRAPH_HOURS_OPTIONS = [12, 24, 48]
+DEFAULT_GRAPH_HOURS = 24
+
+# Device colors for multi-device visualization
+DEVICE_COLORS = [
+    "#4CAF50",  # Green
+    "#2196F3",  # Blue
+    "#FF9800",  # Orange
+    "#9C27B0",  # Purple
+    "#F44336",  # Red
+    "#00BCD4",  # Cyan
+    "#795548",  # Brown
+    "#607D8B",  # Blue Grey
+    "#E91E63",  # Pink
+    "#FFC107",  # Amber
+]
+
 # File reader for testing
 NAME_FILE_READER = "file_reader"
 PATH_FILE_READER = "config/config_entry-nordpool_optimizer.json"

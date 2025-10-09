@@ -16,7 +16,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
 
 from . import NordpoolOptimizer, NordpoolOptimizerEntity
-from .const import DOMAIN
+from .const import (
+    DEVICE_COLORS,
+    DOMAIN,
+    DEFAULT_GRAPH_HOURS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,6 +33,7 @@ async def async_setup_entry(
     optimizer: NordpoolOptimizer = hass.data[DOMAIN][config_entry.entry_id]
     entities = []
 
+    # Always create timer entity for this device
     entities.append(
         NordpoolOptimizerTimerEntity(
             optimizer,
@@ -38,6 +43,29 @@ async def async_setup_entry(
             ),
         )
     )
+
+    # Create price graph entity only once (for the first optimizer setup)
+    # Check if price graph entity already exists
+    all_entity_ids = hass.states.async_entity_ids("sensor")
+    existing_entity_ids = [entity_id for entity_id in all_entity_ids
+                          if entity_id.startswith("sensor.nordpool_optimizer_price_graph")]
+
+    # Also check if any domain data already has a graph entity flag
+    domain_data = hass.data.get(DOMAIN, {})
+    graph_entity_exists = any(
+        hasattr(opt, '_has_graph_entity') and opt._has_graph_entity
+        for opt in domain_data.values()
+        if hasattr(opt, '_has_graph_entity')
+    )
+
+    if not existing_entity_ids and not graph_entity_exists:
+        # Create the global price graph entity
+        graph_entity = NordpoolOptimizerPriceGraphEntity(hass, DEFAULT_GRAPH_HOURS)
+        entities.append(graph_entity)
+
+        # Mark that we've created the graph entity
+        optimizer._has_graph_entity = True
+        _LOGGER.debug("Created price graph entity for nordpool optimizer")
 
     async_add_entities(entities)
     return True
@@ -171,3 +199,208 @@ class NordpoolOptimizerTimerEntity(NordpoolOptimizerEntity, SensorEntity):
         """Register with optimizer for updates."""
         await super().async_added_to_hass()
         self._optimizer.register_output_listener_entity(self, "timer")
+
+
+class NordpoolOptimizerPriceGraphEntity(SensorEntity):
+    """Price graph entity showing future prices with optimal periods for all devices."""
+
+    def __init__(self, hass: HomeAssistant, hours_ahead: int = DEFAULT_GRAPH_HOURS) -> None:
+        """Initialize the price graph entity."""
+        self._hass = hass
+        self._hours_ahead = hours_ahead
+        self._attr_name = "Nordpool Price Graph"
+        self._attr_unique_id = "nordpool_optimizer_price_graph"
+        self._attr_icon = "mdi:chart-line"
+        self._attr_device_class = SensorDeviceClass.MONETARY
+        self._attr_native_unit_of_measurement = None  # Will be set from price data
+
+    @property
+    def native_value(self) -> float | None:
+        """Return current price as sensor state."""
+        # Get current price from any available optimizer
+        optimizers = self._get_all_optimizers()
+        if not optimizers:
+            return None
+
+        for optimizer in optimizers:
+            if optimizer._prices_entity.valid:
+                current_price = optimizer._prices_entity.current_price_attr
+                if current_price is not None:
+                    return current_price
+
+        return None
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        """Return unit of measurement from price data."""
+        optimizers = self._get_all_optimizers()
+        if not optimizers:
+            return None
+
+        for optimizer in optimizers:
+            if optimizer._prices_entity.valid and optimizer._prices_entity._np:
+                # Try to get unit from price entity attributes
+                return optimizer._prices_entity._np.attributes.get("unit", "kr/kWh")
+
+        return "kr/kWh"  # Default fallback
+
+    @property
+    def state(self) -> str | None:
+        """Return formatted current price."""
+        value = self.native_value
+        if value is None:
+            return STATE_UNAVAILABLE
+        return f"{value:.3f}"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Return price graph data for chart visualization."""
+        optimizers = self._get_all_optimizers()
+        if not optimizers:
+            return {}
+
+        # Get price data from any optimizer with valid data
+        price_entity = None
+        for optimizer in optimizers:
+            if optimizer._prices_entity.valid:
+                price_entity = optimizer._prices_entity
+                break
+
+        if not price_entity:
+            return {"error": "No valid price data available"}
+
+        # Build price array with optimal period flags
+        now = dt_util.now()
+        end_time = now + dt.timedelta(hours=self._hours_ahead)
+        prices_ahead = []
+        optimal_periods = []
+
+        # Get all prices within time range
+        all_prices = price_entity._all_prices
+        if not all_prices:
+            return {"error": "No price data available"}
+
+        # Filter prices for the specified time range
+        for price_data in all_prices:
+            price_time = price_data["start"]
+            if isinstance(price_time, str):
+                price_time = dt_util.parse_datetime(price_time)
+
+            if not price_time:
+                continue
+
+            if now <= price_time < end_time:
+                # Check which devices are optimal at this time
+                optimal_devices = []
+                for optimizer in optimizers:
+                    if optimizer.is_currently_optimal(price_time):
+                        optimal_devices.append(optimizer.device_name)
+
+                prices_ahead.append({
+                    "time": price_time.isoformat(),
+                    "price": price_data["value"],
+                    "optimal_devices": optimal_devices
+                })
+
+        # Collect optimal periods from all devices with row-based positioning
+        device_color_map = {}
+        device_row_map = {}
+        device_periods = []
+        color_index = 0
+        row_index = 0
+
+        for optimizer in optimizers:
+            device_name = optimizer.device_name
+
+            # Assign color and row to device
+            if device_name not in device_color_map:
+                device_color_map[device_name] = DEVICE_COLORS[color_index % len(DEVICE_COLORS)]
+                device_row_map[device_name] = row_index
+                color_index += 1
+                row_index += 1
+
+            # Collect periods for this device
+            device_optimal_periods = []
+            for period in optimizer._current_optimal_periods:
+                if period.start_time < end_time and period.end_time > now:
+                    device_optimal_periods.append({
+                        "start": period.start_time.isoformat(),
+                        "end": period.end_time.isoformat(),
+                        "average_price": period.average_price
+                    })
+
+            # Add device periods if any exist
+            if device_optimal_periods:
+                # Calculate y_position for chart annotation (negative values below chart)
+                y_position = -0.05 - (device_row_map[device_name] * 0.08)  # Stagger rows
+
+                device_periods.append({
+                    "device": device_name,
+                    "row": device_row_map[device_name],
+                    "periods": device_optimal_periods,
+                    "color": device_color_map[device_name],
+                    "y_position": y_position
+                })
+
+                # Also add to legacy optimal_periods for backward compatibility
+                for period_data in device_optimal_periods:
+                    optimal_periods.append({
+                        "device": device_name,
+                        "start": period_data["start"],
+                        "end": period_data["end"],
+                        "average_price": period_data["average_price"],
+                        "color": device_color_map[device_name],
+                        "row": device_row_map[device_name]
+                    })
+
+        return {
+            "prices_ahead": prices_ahead,
+            "optimal_periods": optimal_periods,  # Legacy format
+            "device_periods": device_periods,    # New row-based format
+            "device_colors": device_color_map,
+            "device_rows": device_row_map,
+            "hours_ahead": self._hours_ahead,
+            "unit": self.native_unit_of_measurement,
+            "last_updated": now.isoformat(),
+            "total_devices": len(optimizers),
+            "chart_layout": {
+                "row_height": 0.08,
+                "row_spacing": 0.05,
+                "base_offset": -0.05
+            }
+        }
+
+    def _get_all_optimizers(self) -> list[NordpoolOptimizer]:
+        """Get all optimizer instances from Home Assistant data."""
+        optimizers = []
+        domain_data = self._hass.data.get(DOMAIN, {})
+
+        for config_entry_id, optimizer in domain_data.items():
+            if isinstance(optimizer, NordpoolOptimizer):
+                optimizers.append(optimizer)
+
+        return optimizers
+
+    @property
+    def should_poll(self) -> bool:
+        """No need to poll, updates are triggered by optimizers."""
+        return False
+
+    def update_callback(self) -> None:
+        """Called when any optimizer updates."""
+        self.schedule_update_ha_state()
+
+    async def async_added_to_hass(self) -> None:
+        """Register with all optimizers for updates."""
+        await super().async_added_to_hass()
+
+        # Register with all existing optimizers
+        optimizers = self._get_all_optimizers()
+        for optimizer in optimizers:
+            optimizer.register_output_listener_entity(self, f"graph_{self.unique_id}")
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Cleanup when entity is removed."""
+        # Note: In a full implementation, we'd need to unregister from optimizers
+        # but the current optimizer cleanup handles this automatically
+        await super().async_will_remove_from_hass()
