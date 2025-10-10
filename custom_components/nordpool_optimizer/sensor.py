@@ -282,7 +282,9 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
 
         # Build price array with optimal period flags
         now = dt_util.now()
-        end_time = now + dt.timedelta(hours=self._hours_ahead)
+        # Start from the current hour boundary to include the full current hour
+        hour_start = now.replace(minute=0, second=0, microsecond=0)
+        end_time = hour_start + dt.timedelta(hours=self._hours_ahead)
         prices_ahead = []
         optimal_periods = []
 
@@ -291,7 +293,7 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         if not all_prices:
             return {"error": "No price data available"}
 
-        # Filter prices for the specified time range
+        # Filter prices for the specified time range (include current hour)
         for price_data in all_prices:
             price_time = price_data["start"]
             if isinstance(price_time, str):
@@ -300,7 +302,7 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
             if not price_time:
                 continue
 
-            if now <= price_time < end_time:
+            if hour_start <= price_time < end_time:
                 # Check which devices are optimal at this time
                 optimal_devices = []
                 for optimizer in optimizers:
@@ -364,6 +366,27 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
                         "row": device_row_map[device_name]
                     })
 
+        # Add debugging information
+        debug_info = {}
+        if all_prices:
+            first_price_time = all_prices[0]["start"]
+            last_price_time = all_prices[-1]["start"]
+            if isinstance(first_price_time, str):
+                first_price_time = dt_util.parse_datetime(first_price_time)
+            if isinstance(last_price_time, str):
+                last_price_time = dt_util.parse_datetime(last_price_time)
+
+            debug_info = {
+                "debug_total_prices": len(all_prices),
+                "debug_first_price": first_price_time.isoformat() if first_price_time else None,
+                "debug_last_price": last_price_time.isoformat() if last_price_time else None,
+                "debug_start_time": hour_start.isoformat(),
+                "debug_end_time": end_time.isoformat(),
+                "debug_now": now.isoformat(),
+                "debug_filtered_prices": len(prices_ahead),
+                "debug_tomorrow_valid": price_entity._np.attributes.get("tomorrow_valid", False) if price_entity._np else None,
+            }
+
         return {
             "prices_ahead": prices_ahead,
             "optimal_periods": optimal_periods,  # Legacy format
@@ -378,7 +401,8 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
                 "row_height": 0.08,
                 "row_spacing": 0.05,
                 "base_offset": -0.05
-            }
+            },
+            **debug_info
         }
 
     def _get_all_optimizers(self) -> list[NordpoolOptimizer]:
