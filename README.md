@@ -216,9 +216,20 @@ series:
     data_generator: |
       const now = new Date().getTime();
       const prices = entity.attributes.prices_ahead || [];
-      return prices
-        .filter(item => new Date(item.time).getTime() >= now)
-        .map(item => [new Date(item.time).getTime(), item.price]);
+      const validPrices = prices
+        .map(item => {
+          const time = new Date(item.time).getTime();
+          const price = parseFloat(item.price);
+          return {
+            time,
+            price,
+            valid: !isNaN(time) && time > 0 && time >= now && !isNaN(price) && isFinite(price)
+          };
+        })
+        .filter(item => item.valid)
+        .sort((a, b) => a.time - b.time)
+        .map(item => [item.time, item.price]);
+      return validPrices;
     name: "Price (kr/kWh)"
     type: line
     color: "#2196F3"
@@ -240,7 +251,7 @@ series:
         }
       });
       return result;
-    name: "Dehumidifier"
+    name: "Device 1"
     type: line
     color: "#4CAF50"
     stroke_width: 6
@@ -273,6 +284,18 @@ graph_span: 24h
 apex_config:
   chart:
     height: 350
+  legend:
+    showForSingleSeries: true
+    showForZeroSeries: true
+    markers:
+      width: 12
+      height: 12
+    itemMargin:
+      horizontal: 5
+    formatter: |
+      EVAL:function(seriesName, opts) {
+        return seriesName;
+      }
   xaxis:
     type: datetime
     min: new Date().getTime()
@@ -288,28 +311,7 @@ For automatically updating charts when devices are added:
 #### 1. Install config-template-card
 **HACS** → **Frontend** → Search "**config template card**" → **Download**
 
-#### 2. Add to configuration.yaml
-```yaml
-template:
-  - trigger:
-      - platform: state
-        entity_id: sensor.nordpool_price_graph
-        attribute: device_periods
-      - platform: homeassistant
-        event: start
-    sensor:
-      - name: "Apex Card Config"
-        state: "ok"
-        attributes:
-          device_count: >
-            {% set periods = state_attr('sensor.nordpool_price_graph', 'device_periods') or [] %}
-            {{ periods | length }}
-          devices: >
-            {% set periods = state_attr('sensor.nordpool_price_graph', 'device_periods') or [] %}
-            {{ periods | map(attribute='device') | list }}
-```
-
-#### 3. Dynamic Dashboard Card
+#### 2. Dynamic Dashboard Card
 ```yaml
 type: custom:config-template-card
 variables:
@@ -326,9 +328,20 @@ card:
         data_generator: `
           const now = new Date().getTime();
           const prices = entity.attributes.prices_ahead || [];
-          return prices
-            .filter(item => new Date(item.time).getTime() >= now)
-            .map(item => [new Date(item.time).getTime(), item.price]);
+          const validPrices = prices
+            .map(item => {
+              const time = new Date(item.time).getTime();
+              const price = parseFloat(item.price);
+              return {
+                time,
+                price,
+                valid: !isNaN(time) && time > 0 && time >= now && !isNaN(price) && isFinite(price)
+              };
+            })
+            .filter(item => item.valid)
+            .sort((a, b) => a.time - b.time)
+            .map(item => [item.time, item.price]);
+          return validPrices;
         `,
         name: 'Price (kr/kWh)',
         type: 'line',
@@ -367,6 +380,18 @@ card:
   apex_config:
     chart:
       height: 350
+    legend:
+      showForSingleSeries: true
+      showForZeroSeries: true
+      markers:
+        width: 12
+        height: 12
+      itemMargin:
+        horizontal: 5
+      formatter: |
+        EVAL:function(seriesName, opts) {
+          return seriesName;
+        }
     xaxis:
       type: datetime
       min: ${new Date().getTime()}

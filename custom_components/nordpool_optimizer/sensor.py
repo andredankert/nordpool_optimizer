@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import time
+from typing import Dict, Set
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -24,62 +26,160 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Global setup state tracking to prevent infinite loops
+_setup_in_progress: Set[str] = set()
+_setup_retry_counts: Dict[str, int] = {}
+_setup_last_attempt: Dict[str, float] = {}
+_setup_locks_created: Dict[str, float] = {}
+
+# Configuration constants
+MAX_SETUP_RETRIES = 3
+SETUP_RETRY_DELAY = 2.0  # seconds
+SETUP_TIMEOUT = 30.0  # seconds
+
+
+def _get_setup_key(config_entry: ConfigEntry) -> str:
+    """Get a unique key for tracking setup state."""
+    return f"{DOMAIN}_{config_entry.entry_id}"
+
+
+def _cleanup_stale_setup_locks() -> None:
+    """Clean up setup locks that have timed out."""
+    current_time = time.time()
+    stale_keys = []
+
+    for key, created_time in _setup_locks_created.items():
+        if current_time - created_time > SETUP_TIMEOUT:
+            stale_keys.append(key)
+
+    for key in stale_keys:
+        _LOGGER.warning("Cleaning up stale setup lock for %s (timeout after %.1fs)",
+                       key, SETUP_TIMEOUT)
+        _setup_in_progress.discard(key)
+        _setup_retry_counts.pop(key, None)
+        _setup_last_attempt.pop(key, None)
+        _setup_locks_created.pop(key, None)
+
+
+def _can_start_setup(setup_key: str) -> bool:
+    """Check if setup can be started based on retry logic."""
+    current_time = time.time()
+
+    # Clean up any stale locks first
+    _cleanup_stale_setup_locks()
+
+    # Check if setup is already in progress
+    if setup_key in _setup_in_progress:
+        _LOGGER.debug("Setup already in progress for %s", setup_key)
+        return False
+
+    # Check retry count
+    retry_count = _setup_retry_counts.get(setup_key, 0)
+    if retry_count >= MAX_SETUP_RETRIES:
+        _LOGGER.warning("Maximum setup retries (%d) exceeded for %s",
+                       MAX_SETUP_RETRIES, setup_key)
+        return False
+
+    # Check retry delay
+    last_attempt = _setup_last_attempt.get(setup_key, 0)
+    if current_time - last_attempt < SETUP_RETRY_DELAY:
+        time_left = SETUP_RETRY_DELAY - (current_time - last_attempt)
+        _LOGGER.debug("Setup retry delay active for %s (%.1fs remaining)",
+                     setup_key, time_left)
+        return False
+
+    return True
+
+
+def _start_setup(setup_key: str) -> None:
+    """Mark setup as started."""
+    current_time = time.time()
+    _setup_in_progress.add(setup_key)
+    _setup_last_attempt[setup_key] = current_time
+    _setup_locks_created[setup_key] = current_time
+    retry_count = _setup_retry_counts.get(setup_key, 0)
+    _setup_retry_counts[setup_key] = retry_count + 1
+    _LOGGER.debug("Started setup for %s (attempt %d/%d)",
+                 setup_key, retry_count + 1, MAX_SETUP_RETRIES)
+
+
+def _finish_setup(setup_key: str, success: bool = True) -> None:
+    """Mark setup as finished."""
+    _setup_in_progress.discard(setup_key)
+    _setup_locks_created.pop(setup_key, None)
+
+    if success:
+        # Clear retry count on success
+        _setup_retry_counts.pop(setup_key, None)
+        _setup_last_attempt.pop(setup_key, None)
+        _LOGGER.debug("Setup completed successfully for %s", setup_key)
+    else:
+        _LOGGER.debug("Setup failed for %s (will retry if attempts remain)", setup_key)
+
 
 async def async_setup_entry(
     hass: HomeAssistant, config_entry: ConfigEntry, async_add_entities
 ):
     """Create timer entity for platform."""
+    setup_key = _get_setup_key(config_entry)
 
-    optimizer: NordpoolOptimizer = hass.data[DOMAIN][config_entry.entry_id]
-    entities = []
+    # Check if we can start setup (prevents infinite loops)
+    if not _can_start_setup(setup_key):
+        _LOGGER.debug("Skipping setup for %s (already in progress or rate limited)", setup_key)
+        return False
 
-    # Always create timer entity for this device
-    entities.append(
-        NordpoolOptimizerTimerEntity(
-            optimizer,
-            entity_description=SensorEntityDescription(
-                key="timer",
-                # Remove device class to allow custom formatting
-            ),
+    _start_setup(setup_key)
+
+    try:
+        optimizer: NordpoolOptimizer = hass.data[DOMAIN][config_entry.entry_id]
+        entities = []
+
+        # Always create timer entity for this device
+        entities.append(
+            NordpoolOptimizerTimerEntity(
+                optimizer,
+                entity_description=SensorEntityDescription(
+                    key="timer",
+                    # Remove device class to allow custom formatting
+                ),
+            )
         )
-    )
 
-    # Create price graph entity only once (for the first optimizer setup)
-    # Check if price graph entity already exists
-    all_entity_ids = hass.states.async_entity_ids("sensor")
-    existing_entity_ids = [entity_id for entity_id in all_entity_ids
-                          if entity_id.startswith("sensor.nordpool_optimizer_price_graph")]
+        # Create price graph entity only once (for the first optimizer setup)
+        # Check if price graph entity already exists
+        all_entity_ids = hass.states.async_entity_ids("sensor")
+        existing_entity_ids = [entity_id for entity_id in all_entity_ids
+                              if entity_id.startswith("sensor.nordpool_optimizer_price_graph")]
 
-    # Also check if any domain data already has a graph entity flag
-    domain_data = hass.data.get(DOMAIN, {})
-    graph_entity_exists = any(
-        hasattr(opt, '_has_graph_entity') and opt._has_graph_entity
-        for opt in domain_data.values()
-        if hasattr(opt, '_has_graph_entity')
-    )
+        # Also check if any domain data already has a graph entity flag
+        domain_data = hass.data.get(DOMAIN, {})
+        graph_entity_exists = any(
+            hasattr(opt, '_has_graph_entity') and opt._has_graph_entity
+            for opt in domain_data.values()
+            if hasattr(opt, '_has_graph_entity')
+        )
 
-    if not existing_entity_ids and not graph_entity_exists:
-        # Create the global price graph entity
-        graph_entity = NordpoolOptimizerPriceGraphEntity(hass, DEFAULT_GRAPH_HOURS)
-        entities.append(graph_entity)
+        if not existing_entity_ids and not graph_entity_exists:
+            # Create the global price graph entity
+            graph_entity = NordpoolOptimizerPriceGraphEntity(hass, DEFAULT_GRAPH_HOURS)
+            entities.append(graph_entity)
 
-        # Mark that we've created the graph entity
-        optimizer._has_graph_entity = True
-        _LOGGER.debug("Created price graph entity for nordpool optimizer")
-    else:
-        # Graph entity already exists, trigger discovery update
-        _LOGGER.debug("Price graph entity already exists, triggering discovery update for new device")
+            # Mark that we've created the graph entity
+            optimizer._has_graph_entity = True
+            _LOGGER.debug("Created price graph entity for nordpool optimizer")
+        else:
+            # Graph entity already exists, but skip discovery update during setup to prevent loops
+            # The auto-registration will happen naturally through the price graph entity's update cycle
+            _LOGGER.debug("Price graph entity already exists for %s, auto-registration will occur on next update", setup_key)
 
-        # Find the existing graph entity and trigger discovery
-        for entity_id in existing_entity_ids:
-            entity_state = hass.states.get(entity_id)
-            if entity_state:
-                # The auto-registration will happen on the next update
-                # We can't directly access the entity object here, but the next update cycle will pick it up
-                _LOGGER.debug("Will auto-register with existing price graph entity: %s", entity_id)
+        async_add_entities(entities)
+        _finish_setup(setup_key, success=True)
+        return True
 
-    async_add_entities(entities)
-    return True
+    except Exception as e:
+        _LOGGER.exception("Failed to setup entities for %s: %s", setup_key, e)
+        _finish_setup(setup_key, success=False)
+        return False
 
 
 class NordpoolOptimizerTimerEntity(NordpoolOptimizerEntity, SensorEntity):
@@ -366,27 +466,6 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
                         "row": device_row_map[device_name]
                     })
 
-        # Add debugging information
-        debug_info = {}
-        if all_prices:
-            first_price_time = all_prices[0]["start"]
-            last_price_time = all_prices[-1]["start"]
-            if isinstance(first_price_time, str):
-                first_price_time = dt_util.parse_datetime(first_price_time)
-            if isinstance(last_price_time, str):
-                last_price_time = dt_util.parse_datetime(last_price_time)
-
-            debug_info = {
-                "debug_total_prices": len(all_prices),
-                "debug_first_price": first_price_time.isoformat() if first_price_time else None,
-                "debug_last_price": last_price_time.isoformat() if last_price_time else None,
-                "debug_start_time": hour_start.isoformat(),
-                "debug_end_time": end_time.isoformat(),
-                "debug_now": now.isoformat(),
-                "debug_filtered_prices": len(prices_ahead),
-                "debug_tomorrow_valid": price_entity._np.attributes.get("tomorrow_valid", False) if price_entity._np else None,
-            }
-
         return {
             "prices_ahead": prices_ahead,
             "optimal_periods": optimal_periods,  # Legacy format
@@ -401,8 +480,7 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
                 "row_height": 0.08,
                 "row_spacing": 0.05,
                 "base_offset": -0.05
-            },
-            **debug_info
+            }
         }
 
     def _get_all_optimizers(self) -> list[NordpoolOptimizer]:
@@ -413,6 +491,12 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         for config_entry_id, optimizer in domain_data.items():
             if isinstance(optimizer, NordpoolOptimizer):
                 optimizers.append(optimizer)
+
+                # Check if any setup is in progress before auto-registering to prevent loops
+                setup_key = f"{DOMAIN}_{config_entry_id}"
+                if setup_key in _setup_in_progress:
+                    _LOGGER.debug("Skipping auto-registration for %s (setup in progress)", optimizer.device_name)
+                    continue
 
                 # Auto-register with new optimizers that haven't been registered yet
                 graph_listener_key = f"graph_{self.unique_id}"
