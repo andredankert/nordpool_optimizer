@@ -34,6 +34,12 @@
                     "time_window": "Time window (HH:MM-HH:MM, e.g. 22:00-06:00)"
                 }
             },
+            "graph_settings": {
+                "description": "Configure price graph display settings for {device_name}",
+                "data": {
+                    "graph_hours_ahead": "Graph display duration (hours ahead)"
+                }
+            },
             "reconfigure": {
                 "description": "Reconfigure the optimizer settings",
                 "data": {
@@ -43,7 +49,8 @@
                     "price_threshold": "Price threshold",
                     "slot_type": "Slot type",
                     "time_window_enabled": "Enable time window restriction",
-                    "time_window": "Time window (HH:MM-HH:MM)"
+                    "time_window": "Time window (HH:MM-HH:MM)",
+                    "graph_hours_ahead": "Graph display duration (hours ahead)"
                 }
             }
         },

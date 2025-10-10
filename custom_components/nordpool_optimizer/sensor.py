@@ -19,9 +19,10 @@ from homeassistant.util import dt as dt_util
 
 from . import NordpoolOptimizer, NordpoolOptimizerEntity
 from .const import (
+    CONF_GRAPH_HOURS_AHEAD,
+    DEFAULT_GRAPH_HOURS,
     DEVICE_COLORS,
     DOMAIN,
-    DEFAULT_GRAPH_HOURS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -34,8 +35,8 @@ _setup_locks_created: Dict[str, float] = {}
 
 # Configuration constants
 MAX_SETUP_RETRIES = 3
-SETUP_RETRY_DELAY = 2.0  # seconds
-SETUP_TIMEOUT = 30.0  # seconds
+SETUP_RETRY_DELAY = 30.0  # seconds - extended cooldown to prevent infinite loops
+SETUP_TIMEOUT = 60.0  # seconds - increased to accommodate longer delays
 
 
 def _get_setup_key(config_entry: ConfigEntry) -> str:
@@ -109,10 +110,11 @@ def _finish_setup(setup_key: str, success: bool = True) -> None:
     _setup_locks_created.pop(setup_key, None)
 
     if success:
-        # Clear retry count on success
+        # Clear retry count on success but keep last attempt timestamp for cooldown
         _setup_retry_counts.pop(setup_key, None)
-        _setup_last_attempt.pop(setup_key, None)
-        _LOGGER.debug("Setup completed successfully for %s", setup_key)
+        # Keep last_attempt timestamp to enforce cooldown period even after success
+        _setup_last_attempt[setup_key] = time.time()
+        _LOGGER.debug("Setup completed successfully for %s (30s cooldown active)", setup_key)
     else:
         _LOGGER.debug("Setup failed for %s (will retry if attempts remain)", setup_key)
 
@@ -160,8 +162,9 @@ async def async_setup_entry(
         )
 
         if not existing_entity_ids and not graph_entity_exists:
-            # Create the global price graph entity
-            graph_entity = NordpoolOptimizerPriceGraphEntity(hass, DEFAULT_GRAPH_HOURS)
+            # Create the global price graph entity with configured hours
+            graph_hours = config_entry.data.get(CONF_GRAPH_HOURS_AHEAD, DEFAULT_GRAPH_HOURS)
+            graph_entity = NordpoolOptimizerPriceGraphEntity(hass, graph_hours)
             entities.append(graph_entity)
 
             # Mark that we've created the graph entity

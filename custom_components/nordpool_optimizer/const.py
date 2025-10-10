@@ -41,7 +41,7 @@ CONF_TIME_WINDOW_ENABLED = "time_window_enabled"
 CONF_ENABLE_PRICE_GRAPH = "enable_price_graph"
 CONF_GRAPH_HOURS_AHEAD = "graph_hours_ahead"
 GRAPH_HOURS_OPTIONS = [12, 24, 48]
-DEFAULT_GRAPH_HOURS = 24
+DEFAULT_GRAPH_HOURS = 48
 
 # Device colors for multi-device visualization
 DEVICE_COLORS = [

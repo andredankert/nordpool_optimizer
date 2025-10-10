@@ -15,6 +15,7 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_DEVICE_NAME,
     CONF_DURATION,
+    CONF_GRAPH_HOURS_AHEAD,
     CONF_MODE,
     CONF_MODE_ABSOLUTE,
     CONF_MODE_DAILY,
@@ -27,7 +28,9 @@ from .const import (
     CONF_SLOT_TYPE_SEPARATE,
     CONF_TIME_WINDOW,
     CONF_TIME_WINDOW_ENABLED,
+    DEFAULT_GRAPH_HOURS,
     DOMAIN,
+    GRAPH_HOURS_OPTIONS,
     NAME_FILE_READER,
     PATH_FILE_READER,
 )
@@ -224,20 +227,12 @@ class NordpoolOptimizerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     elif not (0 <= end_hour <= 23 and 0 <= end_min <= 59):
                         errors["time_window"] = "invalid_end_time"
                     else:
-                        return self.async_create_entry(
-                            title=self.data[CONF_DEVICE_NAME],
-                            data=self.data,
-                            options=self.options,
-                        )
+                        return await self.async_step_graph_settings()
                 except (ValueError, AttributeError):
                     errors["time_window"] = "invalid_time_format"
             else:
                 # No time window or disabled
-                return self.async_create_entry(
-                    title=self.data[CONF_DEVICE_NAME],
-                    data=self.data,
-                    options=self.options,
-                )
+                return await self.async_step_graph_settings()
 
         data_schema = vol.Schema(
             {
@@ -253,6 +248,37 @@ class NordpoolOptimizerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={
                 "device_name": self.data[CONF_DEVICE_NAME],
                 "mode": self.data[CONF_MODE],
+            },
+        )
+
+    async def async_step_graph_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle graph settings configuration."""
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            self.data.update(user_input)
+            return self.async_create_entry(
+                title=self.data[CONF_DEVICE_NAME],
+                data=self.data,
+                options=self.options,
+            )
+
+        data_schema = vol.Schema(
+            {
+                vol.Optional(CONF_GRAPH_HOURS_AHEAD, default=DEFAULT_GRAPH_HOURS): vol.In(
+                    GRAPH_HOURS_OPTIONS
+                ),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="graph_settings",
+            data_schema=data_schema,
+            errors=errors,
+            description_placeholders={
+                "device_name": self.data[CONF_DEVICE_NAME],
             },
         )
 
@@ -356,6 +382,16 @@ class NordpoolOptimizerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_TIME_WINDOW,
                     default=config_entry.data.get(CONF_TIME_WINDOW, "22:00-06:00"),
                 ): str,
+            }
+        )
+
+        # Add graph settings
+        data_schema = data_schema.extend(
+            {
+                vol.Optional(
+                    CONF_GRAPH_HOURS_AHEAD,
+                    default=config_entry.data.get(CONF_GRAPH_HOURS_AHEAD, DEFAULT_GRAPH_HOURS),
+                ): vol.In(GRAPH_HOURS_OPTIONS),
             }
         )
 
