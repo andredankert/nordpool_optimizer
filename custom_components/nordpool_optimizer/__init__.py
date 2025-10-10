@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
 import logging
 import os
+import pickle
 from pathlib import Path
 
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
@@ -533,7 +533,7 @@ class PricesEntity:
         self._hass = hass
         self._cache_file = None
         if hass:
-            self._cache_file = Path(hass.config.config_dir) / "nordpool_optimizer_cache.json"
+            self._cache_file = Path(hass.config.config_dir) / "nordpool_optimizer_cache.pkl"
 
     def as_dict(self):
         """For diagnostics serialization."""
@@ -584,14 +584,14 @@ class PricesEntity:
         return None
 
     def load_cache(self) -> bool:
-        """Load price data from cache file."""
+        """Load price data from cache file using pickle."""
         if not self._cache_file or not self._cache_file.exists():
             _LOGGER.debug("No cache file found at %s", self._cache_file)
             return False
 
         try:
-            with open(self._cache_file, 'r') as f:
-                cache_data = json.load(f)
+            with open(self._cache_file, 'rb') as f:
+                cache_data = pickle.load(f)
 
             # Check if cache is for our entity and is recent enough (max 6 hours old)
             if (cache_data.get('entity_id') != self._unique_id or
@@ -599,7 +599,7 @@ class PricesEntity:
                 _LOGGER.debug("Cache invalid or too old for entity %s", self._unique_id)
                 return False
 
-            # Create a mock state object from cached data
+            # Create a mock state object from cached data (datetime objects preserved by pickle)
             class MockState:
                 def __init__(self, attributes):
                     self.attributes = attributes
@@ -608,12 +608,12 @@ class PricesEntity:
             _LOGGER.debug("Successfully loaded cached price data for %s", self._unique_id)
             return True
 
-        except (json.JSONDecodeError, KeyError, OSError) as e:
+        except (pickle.PickleError, KeyError, OSError, EOFError) as e:
             _LOGGER.warning("Failed to load cache file: %s", e)
             return False
 
     def save_cache(self) -> None:
-        """Save current price data to cache file."""
+        """Save current price data to cache file using pickle."""
         if not self._cache_file or not self._np:
             return
 
@@ -627,12 +627,12 @@ class PricesEntity:
             # Ensure cache directory exists
             self._cache_file.parent.mkdir(exist_ok=True)
 
-            with open(self._cache_file, 'w') as f:
-                json.dump(cache_data, f, default=str)
+            with open(self._cache_file, 'wb') as f:
+                pickle.dump(cache_data, f)
 
             _LOGGER.debug("Saved price data cache for %s", self._unique_id)
 
-        except (OSError, TypeError) as e:
+        except (OSError, pickle.PickleError) as e:
             _LOGGER.warning("Failed to save cache file: %s", e)
 
     def _is_cache_valid(self, timestamp_str: str) -> bool:
