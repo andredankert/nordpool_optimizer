@@ -66,6 +66,17 @@ async def async_setup_entry(
         # Mark that we've created the graph entity
         optimizer._has_graph_entity = True
         _LOGGER.debug("Created price graph entity for nordpool optimizer")
+    else:
+        # Graph entity already exists, trigger discovery update
+        _LOGGER.debug("Price graph entity already exists, triggering discovery update for new device")
+
+        # Find the existing graph entity and trigger discovery
+        for entity_id in existing_entity_ids:
+            entity_state = hass.states.get(entity_id)
+            if entity_state:
+                # The auto-registration will happen on the next update
+                # We can't directly access the entity object here, but the next update cycle will pick it up
+                _LOGGER.debug("Will auto-register with existing price graph entity: %s", entity_id)
 
     async_add_entities(entities)
     return True
@@ -371,13 +382,19 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         }
 
     def _get_all_optimizers(self) -> list[NordpoolOptimizer]:
-        """Get all optimizer instances from Home Assistant data."""
+        """Get all optimizer instances and auto-register with new ones."""
         optimizers = []
         domain_data = self._hass.data.get(DOMAIN, {})
 
         for config_entry_id, optimizer in domain_data.items():
             if isinstance(optimizer, NordpoolOptimizer):
                 optimizers.append(optimizer)
+
+                # Auto-register with new optimizers that haven't been registered yet
+                graph_listener_key = f"graph_{self.unique_id}"
+                if graph_listener_key not in optimizer._output_listeners:
+                    optimizer.register_output_listener_entity(self, graph_listener_key)
+                    _LOGGER.debug("Auto-registered graph entity with new optimizer: %s", optimizer.device_name)
 
         return optimizers
 
@@ -389,6 +406,12 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
     def update_callback(self) -> None:
         """Called when any optimizer updates."""
         self.schedule_update_ha_state()
+
+    def force_discovery_update(self) -> None:
+        """Force an immediate discovery update to pick up new devices."""
+        # This will trigger _get_all_optimizers which will auto-register new devices
+        self.schedule_update_ha_state()
+        _LOGGER.debug("Forced discovery update for price graph entity")
 
     async def async_added_to_hass(self) -> None:
         """Register with all optimizers for updates."""
