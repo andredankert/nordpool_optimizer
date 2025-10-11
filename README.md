@@ -280,7 +280,7 @@ series:
     opacity: 0.8
 span:
   start: hour
-graph_span: 24h
+graph_span: 48h
 apex_config:
   chart:
     height: 350
@@ -298,7 +298,38 @@ apex_config:
       }
   xaxis:
     type: datetime
-    min: new Date().getTime()
+    min: |
+      EVAL:(() => {
+        const entity = states['sensor.nordpool_price_graph'];
+        return entity?.attributes?.time_range?.start ?
+          new Date(entity.attributes.time_range.start).getTime() :
+          new Date().getTime();
+      })()
+    max: |
+      EVAL:(() => {
+        const entity = states['sensor.nordpool_price_graph'];
+        return entity?.attributes?.time_range?.end ?
+          new Date(entity.attributes.time_range.end).getTime() :
+          new Date().getTime() + 24*60*60*1000;
+      })()
+  annotations:
+    xaxis:
+      - x: |
+          EVAL:(() => {
+            const entity = states['sensor.nordpool_price_graph'];
+            return entity?.attributes?.current_time ?
+              new Date(entity.attributes.current_time).getTime() :
+              new Date().getTime();
+          })()
+        borderColor: '#FF0000'
+        borderWidth: 2
+        strokeDashArray: 5
+        label:
+          text: 'Now'
+          position: 'top'
+          style:
+            color: '#FF0000'
+            background: '#FFF'
   yaxis:
     title:
       text: "Price (kr/kWh)"
@@ -394,7 +425,35 @@ card:
         }
     xaxis:
       type: datetime
-      min: ${new Date().getTime()}
+      min: ${(() => {
+        const entity = states['sensor.nordpool_price_graph'];
+        return entity?.attributes?.time_range?.start ?
+          new Date(entity.attributes.time_range.start).getTime() :
+          new Date().getTime();
+      })()}
+      max: ${(() => {
+        const entity = states['sensor.nordpool_price_graph'];
+        return entity?.attributes?.time_range?.end ?
+          new Date(entity.attributes.time_range.end).getTime() :
+          new Date().getTime() + 24*60*60*1000;
+      })()}
+    annotations:
+      xaxis:
+        - x: ${(() => {
+            const entity = states['sensor.nordpool_price_graph'];
+            return entity?.attributes?.current_time ?
+              new Date(entity.attributes.current_time).getTime() :
+              new Date().getTime();
+          })()}
+          borderColor: '#FF0000'
+          borderWidth: 2
+          strokeDashArray: 5
+          label:
+            text: 'Now'
+            position: 'top'
+            style:
+              color: '#FF0000'
+              background: '#FFF'
     yaxis:
       title:
         text: "Price (kr/kWh)"

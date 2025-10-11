@@ -385,9 +385,17 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
 
         # Build price array with optimal period flags
         now = dt_util.now()
-        # Start from the current hour boundary to include the full current hour
-        hour_start = now.replace(minute=0, second=0, microsecond=0)
-        end_time = hour_start + dt.timedelta(hours=self._hours_ahead)
+
+        # Smart time range selection based on data availability
+        if price_entity._np.attributes.get("tomorrow_valid", False):
+            # Tomorrow data available: show today 00:00 to tomorrow 23:59
+            start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_time = start_time + dt.timedelta(days=2) - dt.timedelta(microseconds=1)
+        else:
+            # Tomorrow data NOT available: show yesterday 00:00 to today 23:59
+            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            start_time = today_start - dt.timedelta(days=1)
+            end_time = today_start + dt.timedelta(days=1) - dt.timedelta(microseconds=1)
         prices_ahead = []
         optimal_periods = []
 
@@ -396,7 +404,7 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         if not all_prices:
             return {"error": "No price data available"}
 
-        # Filter prices for the specified time range (include current hour)
+        # Filter prices for the specified time range
         for price_data in all_prices:
             price_time = price_data["start"]
             if isinstance(price_time, str):
@@ -405,7 +413,7 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
             if not price_time:
                 continue
 
-            if hour_start <= price_time < end_time:
+            if start_time <= price_time < end_time:
                 # Check which devices are optimal at this time
                 optimal_devices = []
                 for optimizer in optimizers:
@@ -478,6 +486,12 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
             "hours_ahead": self._hours_ahead,
             "unit": self.native_unit_of_measurement,
             "last_updated": now.isoformat(),
+            "current_time": now.isoformat(),  # Current time for vertical line marker
+            "time_range": {
+                "start": start_time.isoformat(),
+                "end": end_time.isoformat(),
+                "tomorrow_data_available": price_entity._np.attributes.get("tomorrow_valid", False)
+            },
             "total_devices": len(optimizers),
             "chart_layout": {
                 "row_height": 0.08,
