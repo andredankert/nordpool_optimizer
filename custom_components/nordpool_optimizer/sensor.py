@@ -386,16 +386,30 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         # Build price array with optimal period flags
         now = dt_util.now()
 
-        # Smart time range selection based on data availability
-        if price_entity._np.attributes.get("tomorrow_valid", False):
-            # Tomorrow data available: show today 00:00 to tomorrow 23:59
+        # Smart time range selection based on actual data availability
+        all_prices = price_entity._all_prices
+        if not all_prices:
+            # Fallback if no price data
             start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_time = start_time + dt.timedelta(days=2) - dt.timedelta(microseconds=1)
+            end_time = start_time + dt.timedelta(days=1) - dt.timedelta(microseconds=1)
         else:
-            # Tomorrow data NOT available: show yesterday 00:00 to today 23:59
-            today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            start_time = today_start - dt.timedelta(days=1)
-            end_time = today_start + dt.timedelta(days=1) - dt.timedelta(microseconds=1)
+            # Check if we actually have tomorrow's data (not just the flag)
+            tomorrow_start = now.replace(hour=0, minute=0, second=0, microsecond=0) + dt.timedelta(days=1)
+            has_tomorrow_data = any(
+                price_data["start"] >= tomorrow_start if isinstance(price_data["start"], dt.datetime)
+                else dt_util.parse_datetime(price_data["start"]) >= tomorrow_start
+                for price_data in all_prices
+            )
+
+            if has_tomorrow_data:
+                # Tomorrow data available: show today 00:00 to tomorrow 23:59
+                start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_time = start_time + dt.timedelta(days=2) - dt.timedelta(microseconds=1)
+            else:
+                # Tomorrow data NOT available: show yesterday 00:00 to today 23:59
+                today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                start_time = today_start - dt.timedelta(days=1)
+                end_time = today_start + dt.timedelta(days=1) - dt.timedelta(microseconds=1)
         prices_ahead = []
         optimal_periods = []
 
@@ -404,7 +418,9 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         if not all_prices:
             return {"error": "No price data available"}
 
-        # Filter prices for the specified time range
+        # Build unique price data with optimal device info
+        price_map = {}  # Use dict to avoid duplicates by timestamp
+
         for price_data in all_prices:
             price_time = price_data["start"]
             if isinstance(price_time, str):
@@ -414,17 +430,24 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
                 continue
 
             if start_time <= price_time < end_time:
-                # Check which devices are optimal at this time
-                optimal_devices = []
-                for optimizer in optimizers:
-                    if optimizer.is_currently_optimal(price_time):
-                        optimal_devices.append(optimizer.device_name)
+                time_key = price_time.isoformat()
 
-                prices_ahead.append({
-                    "time": price_time.isoformat(),
-                    "price": price_data["value"],
-                    "optimal_devices": optimal_devices
-                })
+                # Only process each timestamp once
+                if time_key not in price_map:
+                    # Check which devices are optimal at this time
+                    optimal_devices = []
+                    for optimizer in optimizers:
+                        if optimizer.is_currently_optimal(price_time):
+                            optimal_devices.append(optimizer.device_name)
+
+                    price_map[time_key] = {
+                        "time": time_key,
+                        "price": price_data["value"],
+                        "optimal_devices": optimal_devices
+                    }
+
+        # Convert map back to list, sorted by time
+        prices_ahead = sorted(price_map.values(), key=lambda x: x["time"])
 
         # Collect optimal periods from all devices with row-based positioning
         device_color_map = {}
@@ -490,7 +513,7 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
             "time_range": {
                 "start": start_time.isoformat(),
                 "end": end_time.isoformat(),
-                "tomorrow_data_available": price_entity._np.attributes.get("tomorrow_valid", False)
+                "tomorrow_data_available": has_tomorrow_data if all_prices else False
             },
             "total_devices": len(optimizers),
             "chart_layout": {
