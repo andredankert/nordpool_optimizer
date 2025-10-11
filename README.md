@@ -209,56 +209,62 @@ apex_config:
 ```yaml
 type: custom:apexcharts-card
 header:
-  title: "Nordpool Prices & Device Periods"
+  title: Nordpool Prices & Device Periods
   show: true
 series:
   - entity: sensor.nordpool_price_graph
     data_generator: |
-      const now = new Date().getTime();
       const prices = entity.attributes.prices_ahead || [];
-      const validPrices = prices
+
+      const priceMap = new Map();
+      prices.forEach(item => {
+        const timeKey = item.time;
+        if (!priceMap.has(timeKey)) {
+          priceMap.set(timeKey, item);
+        }
+      });
+
+      const uniquePrices = Array.from(priceMap.values())
         .map(item => {
           const time = new Date(item.time).getTime();
           const price = parseFloat(item.price);
-          return {
-            time,
-            price,
-            valid: !isNaN(time) && time > 0 && time >= now && !isNaN(price) && isFinite(price)
-          };
+          return [time, price];
         })
-        .filter(item => item.valid)
-        .sort((a, b) => a.time - b.time)
-        .map(item => [item.time, item.price]);
-      return validPrices;
-    name: "Price (kr/kWh)"
+        .filter(item => !isNaN(item[0]) && !isNaN(item[1]) && isFinite(item[1]))
+        .sort((a, b) => a[0] - b[0]);
+
+      return uniquePrices;
+    name: Price (kr/kWh)
     type: line
     color: "#2196F3"
     stroke_width: 2
   - entity: sensor.nordpool_price_graph
     data_generator: |
-      const now = new Date().getTime();
       const periods = entity.attributes.device_periods || [];
       if (periods.length === 0) return [];
       const device = periods[0];
       const result = [];
+
+      // Check raw optimal_periods vs device_periods
+      console.log("Raw optimal_periods:", entity.attributes.optimal_periods);
+      console.log("Optimal period 0 times:", entity.attributes.optimal_periods?.[0]);
+
       device.periods.forEach(period => {
         const startTime = new Date(period.start).getTime();
         const endTime = new Date(period.end).getTime();
-        if (endTime >= now) {
-          result.push([startTime, device.y_position]);
-          result.push([endTime, device.y_position]);
-          result.push([null, null]);
-        }
+        console.log("Dehumidifier: start=" + period.start + ", end=" + period.end);
+        result.push([startTime, device.y_position]);
+        result.push([endTime, device.y_position]);
+        result.push([null, null]);
       });
       return result;
-    name: "Device 1"
+    name: Dehumidifier
     type: line
     color: "#4CAF50"
     stroke_width: 6
     opacity: 0.8
   - entity: sensor.nordpool_price_graph
     data_generator: |
-      const now = new Date().getTime();
       const periods = entity.attributes.device_periods || [];
       if (periods.length < 2) return [];
       const device = periods[1];
@@ -266,200 +272,56 @@ series:
       device.periods.forEach(period => {
         const startTime = new Date(period.start).getTime();
         const endTime = new Date(period.end).getTime();
-        if (endTime >= now) {
-          result.push([startTime, device.y_position]);
-          result.push([endTime, device.y_position]);
-          result.push([null, null]);
-        }
+        result.push([startTime, device.y_position]);
+        result.push([endTime, device.y_position]);
+        result.push([null, null]);
       });
       return result;
-    name: "Device 2"
+    name: AC
     type: line
     color: "#FF9800"
     stroke_width: 6
     opacity: 0.8
+  - entity: sensor.nordpool_price_graph
+    data_generator: |
+      // Create "Now" marker as a vertical line through the price range
+      const currentTime = entity.attributes.current_time;
+      const now = currentTime ? new Date(currentTime).getTime() : new Date().getTime();
+
+      const prices = entity.attributes.prices_ahead || [];
+      if (prices.length === 0) return [];
+
+      const priceValues = prices.map(p => parseFloat(p.price)).filter(p => !isNaN(p));
+      const minPrice = Math.min(...priceValues);
+      const maxPrice = Math.max(...priceValues);
+
+      console.log("Now line from", minPrice, "to", maxPrice, "at", new Date(now));
+
+      return [
+        [now, minPrice],
+        [now, maxPrice],
+        [null, null]
+      ];
+    name: Now
+    type: line
+    color: "#FF0000"
+    stroke_width: 3
 span:
-  start: hour
-graph_span: 48h
+  start: day
+  offset: "-0d"
+graph_span: 2d
 apex_config:
   chart:
     height: 350
   legend:
     showForSingleSeries: true
-    showForZeroSeries: true
-    markers:
-      width: 12
-      height: 12
-    itemMargin:
-      horizontal: 5
-    formatter: |
-      EVAL:function(seriesName, opts) {
-        return seriesName;
-      }
   xaxis:
     type: datetime
-    min: |
-      EVAL:(() => {
-        const entity = states['sensor.nordpool_price_graph'];
-        return entity?.attributes?.time_range?.start ?
-          new Date(entity.attributes.time_range.start).getTime() :
-          new Date().getTime();
-      })()
-    max: |
-      EVAL:(() => {
-        const entity = states['sensor.nordpool_price_graph'];
-        return entity?.attributes?.time_range?.end ?
-          new Date(entity.attributes.time_range.end).getTime() :
-          new Date().getTime() + 24*60*60*1000;
-      })()
-  annotations:
-    xaxis:
-      - x: |
-          EVAL:(() => {
-            const entity = states['sensor.nordpool_price_graph'];
-            return entity?.attributes?.current_time ?
-              new Date(entity.attributes.current_time).getTime() :
-              new Date().getTime();
-          })()
-        borderColor: '#FF0000'
-        borderWidth: 2
-        strokeDashArray: 5
-        label:
-          text: 'Now'
-          position: 'top'
-          style:
-            color: '#FF0000'
-            background: '#FFF'
   yaxis:
     title:
-      text: "Price (kr/kWh)"
+      text: Price (kr/kWh)
 ```
 
-### Dynamic Auto-Updating Chart
-
-For automatically updating charts when devices are added:
-
-#### 1. Install config-template-card
-**HACS** → **Frontend** → Search "**config template card**" → **Download**
-
-#### 2. Dynamic Dashboard Card
-```yaml
-type: custom:config-template-card
-variables:
-  PERIODS: states['sensor.nordpool_price_graph'].attributes.device_periods || []
-card:
-  type: custom:apexcharts-card
-  header:
-    title: "Nordpool Prices & Device Periods"
-    show: true
-  series: >
-    ${[
-      {
-        entity: 'sensor.nordpool_price_graph',
-        data_generator: `
-          const now = new Date().getTime();
-          const prices = entity.attributes.prices_ahead || [];
-          const validPrices = prices
-            .map(item => {
-              const time = new Date(item.time).getTime();
-              const price = parseFloat(item.price);
-              return {
-                time,
-                price,
-                valid: !isNaN(time) && time > 0 && time >= now && !isNaN(price) && isFinite(price)
-              };
-            })
-            .filter(item => item.valid)
-            .sort((a, b) => a.time - b.time)
-            .map(item => [item.time, item.price]);
-          return validPrices;
-        `,
-        name: 'Price (kr/kWh)',
-        type: 'line',
-        color: '#2196F3',
-        stroke_width: 2
-      },
-      ...PERIODS.map((device, index) => ({
-        entity: 'sensor.nordpool_price_graph',
-        data_generator: `
-          const now = new Date().getTime();
-          const periods = entity.attributes.device_periods || [];
-          const device = periods[${index}];
-          if (!device) return [];
-          const result = [];
-          device.periods.forEach(period => {
-            const startTime = new Date(period.start).getTime();
-            const endTime = new Date(period.end).getTime();
-            if (endTime >= now) {
-              result.push([startTime, device.y_position]);
-              result.push([endTime, device.y_position]);
-              result.push([null, null]);
-            }
-          });
-          return result;
-        `,
-        name: device.device,
-        type: 'line',
-        color: device.color,
-        stroke_width: 6,
-        opacity: 0.8
-      }))
-    ]}
-  span:
-    start: hour
-  graph_span: 24h
-  apex_config:
-    chart:
-      height: 350
-    legend:
-      showForSingleSeries: true
-      showForZeroSeries: true
-      markers:
-        width: 12
-        height: 12
-      itemMargin:
-        horizontal: 5
-      formatter: |
-        EVAL:function(seriesName, opts) {
-          return seriesName;
-        }
-    xaxis:
-      type: datetime
-      min: ${(() => {
-        const entity = states['sensor.nordpool_price_graph'];
-        return entity?.attributes?.time_range?.start ?
-          new Date(entity.attributes.time_range.start).getTime() :
-          new Date().getTime();
-      })()}
-      max: ${(() => {
-        const entity = states['sensor.nordpool_price_graph'];
-        return entity?.attributes?.time_range?.end ?
-          new Date(entity.attributes.time_range.end).getTime() :
-          new Date().getTime() + 24*60*60*1000;
-      })()}
-    annotations:
-      xaxis:
-        - x: ${(() => {
-            const entity = states['sensor.nordpool_price_graph'];
-            return entity?.attributes?.current_time ?
-              new Date(entity.attributes.current_time).getTime() :
-              new Date().getTime();
-          })()}
-          borderColor: '#FF0000'
-          borderWidth: 2
-          strokeDashArray: 5
-          label:
-            text: 'Now'
-            position: 'top'
-            style:
-              color: '#FF0000'
-              background: '#FFF'
-    yaxis:
-      title:
-        text: "Price (kr/kWh)"
-```
-
-This approach automatically adds new devices to the chart without manual configuration updates!
 
 ## 🔧 Technical Features
 

@@ -6,6 +6,7 @@ import datetime as dt
 import logging
 import os
 import pickle
+from dataclasses import dataclass
 from pathlib import Path
 
 from homeassistant.config_entries import SOURCE_IMPORT, ConfigEntry
@@ -160,6 +161,14 @@ class NordpoolOptimizer:
         self._optimizer_status = NordpoolOptimizerStatus()
         self._current_optimal_periods: list[OptimalPeriod] = []
 
+        # Persistent period storage
+        self._persistent_periods: list[PersistentOptimalPeriod] = []
+        self._last_calculation_end_time: dt.datetime | None = None
+        self._period_cache_file = Path(hass.config.config_dir) / "custom_components" / "nordpool_optimizer" / "cache" / f"periods_{self.device_name.replace(' ', '_').lower()}.pkl"
+
+        # Configuration change tracking
+        self._last_config_hash = self._get_config_hash()
+
     def as_dict(self):
         """For diagnostics serialization."""
         return {
@@ -171,12 +180,21 @@ class NordpoolOptimizer:
         """Post initialization setup."""
         # Try to load cached price data first for immediate availability
         cache_loaded = self._prices_entity.load_cache()
+
+        # Load persistent periods cache
+        periods_cache_loaded = self.load_period_cache()
+
         if cache_loaded:
             _LOGGER.debug("Loaded cached price data for %s, running initial optimization", self.device_name)
             # Run initial optimization with cached data (don't fetch new data)
             self.update(force_price_update=False)
         else:
             _LOGGER.debug("No valid cache found for %s, will wait for first price update", self.device_name)
+
+        if periods_cache_loaded:
+            _LOGGER.debug("Loaded persistent periods cache for %s", self.device_name)
+        else:
+            _LOGGER.debug("No valid periods cache found for %s", self.device_name)
 
         # Ensure an update is done on every hour for optimization calculations
         self._hourly_update = async_track_time_change(
@@ -288,17 +306,32 @@ class NordpoolOptimizer:
         self._optimizer_status.status = OptimizerStates.Ok
         self._optimizer_status.running_text = "ok"
 
-        # Calculate optimal periods based on mode
+        # Update period statuses and calculate new periods incrementally
         now = dt_util.now()
-        if self.mode == CONF_MODE_ABSOLUTE:
-            periods = self._calculate_absolute_periods(now)
-        elif self.mode == CONF_MODE_DAILY:
-            periods = self._calculate_daily_periods(now)
-        else:
-            periods = []
+        self._update_period_statuses(now)
 
-        # Merge consecutive periods for cleaner display
-        self._current_optimal_periods = self._merge_consecutive_periods(periods)
+        # Check for configuration changes and handle them
+        if self._check_configuration_changed():
+            self._handle_configuration_change(now)
+
+        # Only calculate new periods for data we haven't processed yet
+        new_periods = self._calculate_incremental_periods(now)
+
+        # Add new periods to persistent storage
+        if new_periods:
+            persistent_new_periods = [
+                PersistentOptimalPeriod.from_optimal_period(period, self.device_name)
+                for period in new_periods
+            ]
+            self._persistent_periods.extend(persistent_new_periods)
+            _LOGGER.debug("Added %d new periods for %s", len(new_periods), self.device_name)
+
+        # Clean up old periods and save to cache
+        self._cleanup_old_periods()
+        self.save_period_cache()
+
+        # Update current_optimal_periods for backwards compatibility
+        self._update_current_optimal_periods()
 
         self._last_update = now
 
@@ -451,6 +484,192 @@ class NordpoolOptimizer:
             _LOGGER.warning("Invalid time window format: %s", self.time_window)
             return True
 
+    def _calculate_incremental_periods(self, now: dt.datetime) -> list[OptimalPeriod]:
+        """Calculate optimal periods incrementally - only for new data."""
+        # Determine calculation start time
+        calculation_start = self._get_calculation_start_time(now)
+
+        if calculation_start is None:
+            _LOGGER.debug("No new data to calculate for %s", self.device_name)
+            return []
+
+        _LOGGER.debug("Calculating periods for %s from %s", self.device_name, calculation_start)
+
+        # Calculate periods based on mode, but only for the new time window
+        if self.mode == CONF_MODE_ABSOLUTE:
+            new_periods = self._calculate_absolute_periods_from(calculation_start, now)
+        elif self.mode == CONF_MODE_DAILY:
+            new_periods = self._calculate_daily_periods_from(calculation_start, now)
+        else:
+            new_periods = []
+
+        # Update last calculation end time
+        if new_periods:
+            end_time = now + dt.timedelta(hours=48)  # Look ahead window
+            self._last_calculation_end_time = end_time
+
+        return new_periods
+
+    def _get_calculation_start_time(self, now: dt.datetime) -> dt.datetime | None:
+        """Determine where to start calculating new periods."""
+        # If we have no calculation history, start from now
+        if self._last_calculation_end_time is None:
+            return now.replace(minute=0, second=0, microsecond=0)
+
+        # Find the latest end time from existing periods to avoid overlaps
+        latest_end = self._last_calculation_end_time
+        for period in self._persistent_periods:
+            if period.status != "cancelled" and period.end_time > latest_end:
+                latest_end = period.end_time
+
+        # Start calculation from the latest end time, but at least from now
+        calculation_start = max(latest_end, now.replace(minute=0, second=0, microsecond=0))
+
+        # Check if we actually have new price data to process
+        price_data_end = now + dt.timedelta(hours=48)
+        if calculation_start >= price_data_end:
+            return None  # No new data to process
+
+        return calculation_start
+
+    def _calculate_absolute_periods_from(self, start_time: dt.datetime, now: dt.datetime) -> list[OptimalPeriod]:
+        """Calculate optimal periods for absolute mode from specific start time."""
+        periods = []
+        end_time = now + dt.timedelta(hours=48)
+
+        current_hour = start_time.replace(minute=0, second=0, microsecond=0)
+
+        while current_hour < end_time:
+            # Check if this hour is within time window (if enabled)
+            if self.time_window_enabled and not self._is_in_time_window(current_hour):
+                current_hour += dt.timedelta(hours=1)
+                continue
+
+            # Get price group for the duration starting at this hour
+            period_end = current_hour + dt.timedelta(hours=self.duration)
+            price_group = self._prices_entity.get_prices_group(current_hour, period_end)
+
+            if price_group.valid and price_group.average <= self.price_threshold:
+                # Check if this period overlaps with existing active periods
+                if not self._overlaps_with_existing_periods(current_hour, period_end):
+                    periods.append(OptimalPeriod(
+                        start_time=current_hour,
+                        end_time=period_end,
+                        average_price=price_group.average
+                    ))
+
+            current_hour += dt.timedelta(hours=1)
+
+        return periods
+
+    def _calculate_daily_periods_from(self, start_time: dt.datetime, now: dt.datetime) -> list[OptimalPeriod]:
+        """Calculate optimal periods for daily mode from specific start time."""
+        periods = []
+
+        # Determine which days we need to calculate for
+        start_day = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
+        current_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # Calculate for days that might have new periods
+        days_to_check = []
+        check_day = start_day
+        end_day = current_day + dt.timedelta(days=2)  # Today and tomorrow
+
+        while check_day < end_day:
+            # Only calculate if we don't already have periods for this day
+            if not self._has_periods_for_day(check_day):
+                days_to_check.append(check_day)
+            check_day += dt.timedelta(days=1)
+
+        for day_start in days_to_check:
+            day_end = day_start + dt.timedelta(days=1)
+
+            if self.slot_type == CONF_SLOT_TYPE_CONSECUTIVE:
+                period = self._find_consecutive_daily_period(day_start, day_end)
+            else:
+                period = self._find_separate_daily_periods(day_start, day_end)
+
+            if period:
+                if isinstance(period, list):
+                    periods.extend(period)
+                else:
+                    periods.append(period)
+
+        return periods
+
+    def _overlaps_with_existing_periods(self, start_time: dt.datetime, end_time: dt.datetime) -> bool:
+        """Check if a time period overlaps with existing non-cancelled periods."""
+        for period in self._persistent_periods:
+            if period.status == "cancelled":
+                continue
+
+            # Check for overlap
+            if (start_time < period.end_time and end_time > period.start_time):
+                return True
+
+        return False
+
+    def _has_periods_for_day(self, day_start: dt.datetime) -> bool:
+        """Check if we already have periods calculated for a specific day."""
+        day_end = day_start + dt.timedelta(days=1)
+
+        for period in self._persistent_periods:
+            if period.status == "cancelled":
+                continue
+
+            # Check if period falls within this day
+            if (period.start_time < day_end and period.end_time > day_start):
+                return True
+
+        return False
+
+    def _update_period_statuses(self, now: dt.datetime) -> None:
+        """Update status of all persistent periods based on current time."""
+        for period in self._persistent_periods:
+            period.update_status(now)
+
+    def _get_config_hash(self) -> str:
+        """Generate a hash of the current configuration to detect changes."""
+        import hashlib
+
+        # Include all configuration parameters that affect optimization
+        config_data = {
+            'mode': self.mode,
+            'duration': self.duration,
+            'price_threshold': self.price_threshold,
+            'slot_type': self.slot_type,
+            'time_window_enabled': self.time_window_enabled,
+            'time_window': self.time_window,
+        }
+
+        config_str = str(sorted(config_data.items()))
+        return hashlib.md5(config_str.encode()).hexdigest()
+
+    def _check_configuration_changed(self) -> bool:
+        """Check if configuration has changed since last calculation."""
+        current_hash = self._get_config_hash()
+        if current_hash != self._last_config_hash:
+            _LOGGER.debug("Configuration change detected for %s", self.device_name)
+            self._last_config_hash = current_hash
+            return True
+        return False
+
+    def _handle_configuration_change(self, now: dt.datetime) -> None:
+        """Handle configuration changes by invalidating future periods."""
+        _LOGGER.info("Configuration changed for %s, invalidating future periods", self.device_name)
+
+        # Mark all future (planned) periods as cancelled
+        for period in self._persistent_periods:
+            if period.status == "planned" and period.start_time > now:
+                period.status = "cancelled"
+                _LOGGER.debug("Cancelled future period: %s", period)
+
+        # Reset calculation end time to force recalculation
+        self._last_calculation_end_time = now
+
+        # Save the updated periods
+        self.save_period_cache()
+
     def _merge_consecutive_periods(self, periods: list[OptimalPeriod]) -> list[OptimalPeriod]:
         """Merge consecutive or overlapping periods into single periods."""
         if not periods:
@@ -515,6 +734,109 @@ class NordpoolOptimizer:
         if future_periods:
             return min(future_periods, key=lambda p: p.start_time).start_time
         return None
+
+    def load_period_cache(self) -> bool:
+        """Load persistent periods from cache file."""
+        if not self._period_cache_file or not self._period_cache_file.exists():
+            _LOGGER.debug("No period cache file found at %s", self._period_cache_file)
+            return False
+
+        try:
+            with open(self._period_cache_file, 'rb') as f:
+                cache_data = pickle.load(f)
+
+            # Check if cache is for our device and is recent enough (max 72 hours old)
+            if (cache_data.get('device_id') != self.device_name or
+                not self._is_period_cache_valid(cache_data.get('timestamp'))):
+                _LOGGER.debug("Period cache invalid or too old for device %s", self.device_name)
+                return False
+
+            # Load persistent periods and update their status
+            self._persistent_periods = cache_data.get('periods', [])
+            self._last_calculation_end_time = cache_data.get('last_calculation_end_time')
+
+            # Update period statuses based on current time
+            now = dt_util.now()
+            for period in self._persistent_periods:
+                period.update_status(now)
+
+            # Update current_optimal_periods for backwards compatibility
+            self._update_current_optimal_periods()
+
+            _LOGGER.debug("Successfully loaded %d persistent periods for %s",
+                         len(self._persistent_periods), self.device_name)
+            return True
+
+        except (pickle.PickleError, KeyError, OSError, EOFError) as e:
+            _LOGGER.warning("Failed to load period cache file: %s", e)
+            return False
+
+    def save_period_cache(self) -> None:
+        """Save persistent periods to cache file."""
+        if not self._period_cache_file:
+            return
+
+        try:
+            cache_data = {
+                'device_id': self.device_name,
+                'timestamp': dt_util.now().isoformat(),
+                'periods': self._persistent_periods,
+                'last_calculation_end_time': self._last_calculation_end_time,
+            }
+
+            # Ensure cache directory exists
+            self._period_cache_file.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(self._period_cache_file, 'wb') as f:
+                pickle.dump(cache_data, f)
+
+            _LOGGER.debug("Saved %d persistent periods to cache for %s",
+                         len(self._persistent_periods), self.device_name)
+
+        except (OSError, pickle.PickleError) as e:
+            _LOGGER.warning("Failed to save period cache file: %s", e)
+
+    def _is_period_cache_valid(self, timestamp_str: str) -> bool:
+        """Check if period cache timestamp is recent enough."""
+        if not timestamp_str:
+            return False
+
+        try:
+            cache_time = dt.datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+            if cache_time.tzinfo is None:
+                cache_time = cache_time.replace(tzinfo=dt_util.UTC)
+
+            # Cache is valid for 72 hours (periods can span multiple days)
+            max_age = dt.timedelta(hours=72)
+            return dt_util.now() - cache_time <= max_age
+
+        except (ValueError, TypeError):
+            return False
+
+    def _update_current_optimal_periods(self) -> None:
+        """Update current_optimal_periods from persistent periods for backwards compatibility."""
+        now = dt_util.now()
+        # Only include active and planned periods in current list
+        active_periods = [
+            p.to_optimal_period() for p in self._persistent_periods
+            if p.status in ["planned", "active"] and p.end_time > now
+        ]
+        self._current_optimal_periods = active_periods
+
+    def _cleanup_old_periods(self) -> None:
+        """Remove old completed periods to prevent cache from growing too large."""
+        cutoff_time = dt_util.now() - dt.timedelta(days=7)  # Keep 7 days of history
+        initial_count = len(self._persistent_periods)
+
+        # Keep only periods that are not completed or are recent
+        self._persistent_periods = [
+            p for p in self._persistent_periods
+            if p.status != "completed" or p.end_time > cutoff_time
+        ]
+
+        removed_count = initial_count - len(self._persistent_periods)
+        if removed_count > 0:
+            _LOGGER.debug("Cleaned up %d old periods for %s", removed_count, self.device_name)
 
     def set_unavailable(self) -> None:
         """Set output state to unavailable."""
@@ -738,6 +1060,49 @@ class OptimalPeriod:
     def __str__(self) -> str:
         """String representation."""
         return f"OptimalPeriod({self.start_time.strftime('%H:%M')}-{self.end_time.strftime('%H:%M')}, {self.average_price:.3f})"
+
+
+@dataclass
+class PersistentOptimalPeriod:
+    """Represents an optimal time period with persistence and status tracking."""
+    start_time: dt.datetime
+    end_time: dt.datetime
+    average_price: float
+    status: str  # 'planned', 'active', 'completed', 'cancelled'
+    calculation_time: dt.datetime  # When this period was calculated
+    device_id: str
+
+    def to_optimal_period(self) -> OptimalPeriod:
+        """Convert to legacy OptimalPeriod for backwards compatibility."""
+        return OptimalPeriod(self.start_time, self.end_time, self.average_price)
+
+    @classmethod
+    def from_optimal_period(cls, period: OptimalPeriod, device_id: str, status: str = "planned") -> "PersistentOptimalPeriod":
+        """Create from legacy OptimalPeriod."""
+        return cls(
+            start_time=period.start_time,
+            end_time=period.end_time,
+            average_price=period.average_price,
+            status=status,
+            calculation_time=dt_util.now(),
+            device_id=device_id
+        )
+
+    def update_status(self, now: dt.datetime) -> None:
+        """Update status based on current time."""
+        if self.status == "cancelled":
+            return  # Don't change cancelled status
+
+        if now >= self.end_time:
+            self.status = "completed"
+        elif now >= self.start_time:
+            self.status = "active"
+        else:
+            self.status = "planned"
+
+    def __str__(self) -> str:
+        """String representation."""
+        return f"PersistentOptimalPeriod({self.start_time.strftime('%H:%M')}-{self.end_time.strftime('%H:%M')}, {self.average_price:.3f}, {self.status})"
 
 
 class NordpoolOptimizerStatus:

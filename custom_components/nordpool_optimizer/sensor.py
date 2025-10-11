@@ -466,15 +466,30 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
                 color_index += 1
                 row_index += 1
 
-            # Collect periods for this device
+            # Collect periods for this device from persistent storage
             device_optimal_periods = []
-            for period in optimizer._current_optimal_periods:
-                if period.start_time < end_time and period.end_time > now:
-                    device_optimal_periods.append({
-                        "start": period.start_time.isoformat(),
-                        "end": period.end_time.isoformat(),
-                        "average_price": period.average_price
-                    })
+
+            # Include persistent periods that fall within our time window
+            if hasattr(optimizer, '_persistent_periods'):
+                for period in optimizer._persistent_periods:
+                    # Include periods that overlap with our display time window
+                    if period.start_time < end_time and period.end_time > start_time:
+                        device_optimal_periods.append({
+                            "start": period.start_time.isoformat(),
+                            "end": period.end_time.isoformat(),
+                            "average_price": period.average_price,
+                            "status": period.status
+                        })
+            else:
+                # Fallback to current_optimal_periods for backwards compatibility
+                for period in optimizer._current_optimal_periods:
+                    if period.start_time < end_time and period.end_time > now:
+                        device_optimal_periods.append({
+                            "start": period.start_time.isoformat(),
+                            "end": period.end_time.isoformat(),
+                            "average_price": period.average_price,
+                            "status": "active" if period.start_time <= now < period.end_time else "planned"
+                        })
 
             # Add device periods if any exist
             if device_optimal_periods:
@@ -496,6 +511,7 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
                         "start": period_data["start"],
                         "end": period_data["end"],
                         "average_price": period_data["average_price"],
+                        "status": period_data.get("status", "unknown"),
                         "color": device_color_map[device_name],
                         "row": device_row_map[device_name]
                     })
