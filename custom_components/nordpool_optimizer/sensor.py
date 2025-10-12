@@ -541,7 +541,7 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
             "time_range": {
                 "start": start_time.isoformat(),
                 "end": end_time.isoformat(),
-                "tomorrow_data_available": has_tomorrow_data if all_prices else False
+                "tomorrow_data_available": has_sufficient_tomorrow_data if all_prices else False
             },
             "total_devices": len(optimizers),
             "chart_layout": {
