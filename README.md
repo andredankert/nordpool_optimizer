@@ -315,6 +315,10 @@ apex_config:
     height: 350
   legend:
     showForSingleSeries: true
+    formatter: |
+      EVAL:function(seriesName, opts) {
+        return seriesName;
+      }
   xaxis:
     type: datetime
   yaxis:

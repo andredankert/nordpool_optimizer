@@ -57,6 +57,16 @@ DEVICE_COLORS = [
     "#FFC107",  # Amber
 ]
 
+# Global fee settings
+CONF_TAX_PERCENTAGE = "tax_percentage"
+CONF_PROVIDER_FEE = "provider_fee"
+CONF_NETWORK_FEE = "network_fee"
+
+# Default fee values
+DEFAULT_TAX_PERCENTAGE = 0.0
+DEFAULT_PROVIDER_FEE = 0.0
+DEFAULT_NETWORK_FEE = 0.0
+
 # File reader for testing
 NAME_FILE_READER = "file_reader"
 PATH_FILE_READER = "config/config_entry-nordpool_optimizer.json"

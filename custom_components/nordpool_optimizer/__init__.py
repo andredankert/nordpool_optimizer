@@ -32,13 +32,19 @@ from .const import (
     CONF_MODE,
     CONF_MODE_ABSOLUTE,
     CONF_MODE_DAILY,
+    CONF_NETWORK_FEE,
     CONF_PRICE_THRESHOLD,
     CONF_PRICES_ENTITY,
+    CONF_PROVIDER_FEE,
     CONF_SLOT_TYPE,
     CONF_SLOT_TYPE_CONSECUTIVE,
     CONF_SLOT_TYPE_SEPARATE,
+    CONF_TAX_PERCENTAGE,
     CONF_TIME_WINDOW,
     CONF_TIME_WINDOW_ENABLED,
+    DEFAULT_NETWORK_FEE,
+    DEFAULT_PROVIDER_FEE,
+    DEFAULT_TAX_PERCENTAGE,
     DOMAIN,
     NAME_FILE_READER,
     PATH_FILE_READER,
@@ -62,6 +68,11 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         optimizer = NordpoolOptimizer(hass, config_entry)
         await optimizer.async_setup()
         hass.data[DOMAIN][config_entry.entry_id] = optimizer
+
+        # Add options update listener to trigger recalculation on fee changes
+        config_entry.async_on_unload(
+            config_entry.add_update_listener(async_options_update_listener)
+        )
 
     if config_entry is not None:
         if config_entry.source == SOURCE_IMPORT:
@@ -87,6 +98,19 @@ async def async_reload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> 
     """Reload the config entry."""
     await async_unload_entry(hass, config_entry)
     await async_setup_entry(hass, config_entry)
+
+
+async def async_options_update_listener(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
+    """Handle options update for global fee settings."""
+    _LOGGER.debug("Global fee options updated, triggering recalculation for all optimizers")
+
+    # Update all optimizers when global fee options change
+    domain_data = hass.data.get(DOMAIN, {})
+    for optimizer in domain_data.values():
+        if isinstance(optimizer, NordpoolOptimizer):
+            # Force price update and recalculation
+            optimizer.update(force_price_update=True)
+            _LOGGER.debug("Triggered recalculation for optimizer: %s", optimizer.device_name)
 
 
 async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
@@ -659,6 +683,14 @@ class NordpoolOptimizer:
             'time_window': self.time_window,
         }
 
+        # Include global fee settings in configuration hash
+        fee_settings = self._prices_entity._get_global_fee_settings()
+        config_data.update({
+            'global_tax_percentage': fee_settings['tax_percentage'],
+            'global_provider_fee': fee_settings['provider_fee'],
+            'global_network_fee': fee_settings['network_fee'],
+        })
+
         config_str = str(sorted(config_data.items()))
         return hashlib.md5(config_str.encode()).hexdigest()
 
@@ -878,6 +910,45 @@ class PricesEntity:
         """For diagnostics serialization."""
         return self.__dict__
 
+    def _get_global_fee_settings(self) -> dict[str, float]:
+        """Get global fee settings from integration options."""
+        if not self._hass:
+            return {
+                "tax_percentage": DEFAULT_TAX_PERCENTAGE,
+                "provider_fee": DEFAULT_PROVIDER_FEE,
+                "network_fee": DEFAULT_NETWORK_FEE,
+            }
+
+        # Find any config entry for this domain to get global options
+        for entry in self._hass.config_entries.async_entries(DOMAIN):
+            options = entry.options
+            return {
+                "tax_percentage": options.get(CONF_TAX_PERCENTAGE, DEFAULT_TAX_PERCENTAGE),
+                "provider_fee": options.get(CONF_PROVIDER_FEE, DEFAULT_PROVIDER_FEE),
+                "network_fee": options.get(CONF_NETWORK_FEE, DEFAULT_NETWORK_FEE),
+            }
+
+        # Fallback to defaults if no entries found
+        return {
+            "tax_percentage": DEFAULT_TAX_PERCENTAGE,
+            "provider_fee": DEFAULT_PROVIDER_FEE,
+            "network_fee": DEFAULT_NETWORK_FEE,
+        }
+
+    def _apply_global_fees(self, base_price: float) -> float:
+        """Apply global fees to a base price.
+
+        Formula: new_price = (1 + tax/100) * (price + provider_fee) + network_fee
+        """
+        fees = self._get_global_fee_settings()
+
+        # Apply the formula
+        tax_multiplier = 1 + fees["tax_percentage"] / 100
+        price_with_provider_fee = base_price + fees["provider_fee"]
+        final_price = tax_multiplier * price_with_provider_fee + fees["network_fee"]
+
+        return final_price
+
     @property
     def unique_id(self) -> str:
         """Get the unique id."""
@@ -890,29 +961,38 @@ class PricesEntity:
 
     @property
     def _all_prices(self):
+        base_prices = []
+
         if np_prices := self._np.attributes.get("raw_today"):
             # For Nordpool format
             if self._np.attributes["tomorrow_valid"]:
                 np_prices += self._np.attributes["raw_tomorrow"]
-            return np_prices
+            base_prices = np_prices
         elif e_prices := self._np.attributes.get("prices"):  # noqa: RET505
             # For ENTSO-e format
-            e_prices = [
+            base_prices = [
                 {"start": dt_util.parse_datetime(ep["time"]), "value": ep["price"]}
                 for ep in e_prices
             ]
-            return e_prices  # noqa: RET504
-        return []
+
+        # Apply global fees to all prices
+        fee_adjusted_prices = []
+        for price_data in base_prices:
+            adjusted_price_data = price_data.copy()
+            adjusted_price_data["value"] = self._apply_global_fees(price_data["value"])
+            fee_adjusted_prices.append(adjusted_price_data)
+
+        return fee_adjusted_prices
 
     @property
     def current_price_attr(self):
-        """Get the current price attribute."""
+        """Get the current price attribute with global fees applied."""
         if self._np is not None:
             if current := self._np.attributes.get("current_price"):
-                # For Nordpool format
-                return current
+                # For Nordpool format - apply fees to base price
+                return self._apply_global_fees(current)
             else:  # noqa: RET505
-                # For general, find in list
+                # For general, find in list (fees already applied in _all_prices)
                 now = dt_util.now()
                 for price in self._all_prices:
                     if (

@@ -20,15 +20,21 @@ from .const import (
     CONF_MODE_ABSOLUTE,
     CONF_MODE_DAILY,
     CONF_MODE_LIST,
+    CONF_NETWORK_FEE,
     CONF_PRICE_THRESHOLD,
     CONF_PRICES_ENTITY,
+    CONF_PROVIDER_FEE,
     CONF_SLOT_TYPE,
     CONF_SLOT_TYPE_CONSECUTIVE,
     CONF_SLOT_TYPE_LIST,
     CONF_SLOT_TYPE_SEPARATE,
+    CONF_TAX_PERCENTAGE,
     CONF_TIME_WINDOW,
     CONF_TIME_WINDOW_ENABLED,
     DEFAULT_GRAPH_HOURS,
+    DEFAULT_NETWORK_FEE,
+    DEFAULT_PROVIDER_FEE,
+    DEFAULT_TAX_PERCENTAGE,
     DOMAIN,
     GRAPH_HOURS_OPTIONS,
     NAME_FILE_READER,
@@ -58,6 +64,11 @@ class NordpoolOptimizerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     MINOR_VERSION = 0
     data = None
     options = None
+
+    @staticmethod
+    def async_get_options_flow(config_entry):
+        """Create the options flow."""
+        return NordpoolOptimizerOptionsFlow(config_entry)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -398,4 +409,47 @@ class NordpoolOptimizerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=data_schema,
+        )
+
+
+class NordpoolOptimizerOptionsFlow(config_entries.OptionsFlow):
+    """Handle options flow for global fee settings."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage global fee options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        # Get current option values or defaults
+        current_options = self.config_entry.options
+
+        data_schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_TAX_PERCENTAGE,
+                    default=current_options.get(CONF_TAX_PERCENTAGE, DEFAULT_TAX_PERCENTAGE),
+                ): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=100.0)),
+                vol.Optional(
+                    CONF_PROVIDER_FEE,
+                    default=current_options.get(CONF_PROVIDER_FEE, DEFAULT_PROVIDER_FEE),
+                ): vol.All(vol.Coerce(float), vol.Range(min=-10.0, max=10.0)),
+                vol.Optional(
+                    CONF_NETWORK_FEE,
+                    default=current_options.get(CONF_NETWORK_FEE, DEFAULT_NETWORK_FEE),
+                ): vol.All(vol.Coerce(float), vol.Range(min=-10.0, max=10.0)),
+            }
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=data_schema,
+            description_placeholders={
+                "formula": "new_price = (1 + tax/100) × (price + provider_fee) + network_fee"
+            },
         )

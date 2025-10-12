@@ -67,13 +67,12 @@
     "options": {
         "step": {
             "init": {
+                "title": "Global Fee Settings",
+                "description": "Configure global tax and fees applied to all price data. Formula: {formula}",
                 "data": {
-                    "mode": "Optimization mode",
-                    "duration": "Duration (hours)",
-                    "price_threshold": "Price threshold",
-                    "slot_type": "Slot type",
-                    "time_window_enabled": "Enable time window restriction",
-                    "time_window": "Time window (HH:MM-HH:MM)"
+                    "tax_percentage": "Tax percentage (%)",
+                    "provider_fee": "Provider fee (per kWh)",
+                    "network_fee": "Network fee (per kWh)"
                 }
             }
         }
