@@ -393,20 +393,32 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
             start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
             end_time = start_time + dt.timedelta(days=1) - dt.timedelta(microseconds=1)
         else:
-            # Check if we actually have tomorrow's data (not just the flag)
+            # Check if we have sufficient tomorrow's data (at least 12 hours coverage)
             tomorrow_start = now.replace(hour=0, minute=0, second=0, microsecond=0) + dt.timedelta(days=1)
-            has_tomorrow_data = any(
-                price_data["start"] >= tomorrow_start if isinstance(price_data["start"], dt.datetime)
-                else dt_util.parse_datetime(price_data["start"]) >= tomorrow_start
-                for price_data in all_prices
-            )
+            tomorrow_end = tomorrow_start + dt.timedelta(days=1)
 
-            if has_tomorrow_data:
-                # Tomorrow data available: show today 00:00 to tomorrow 23:59
+            # Count hours of tomorrow data available
+            tomorrow_hours = set()
+            for price_data in all_prices:
+                price_time = price_data["start"]
+                if not isinstance(price_time, dt.datetime):
+                    price_time = dt_util.parse_datetime(price_time)
+
+                if price_time and tomorrow_start <= price_time < tomorrow_end:
+                    # Add the hour to our set
+                    tomorrow_hours.add(price_time.hour)
+
+            # Require at least 12 hours of tomorrow data for sufficient coverage
+            has_sufficient_tomorrow_data = len(tomorrow_hours) >= 12
+            _LOGGER.debug("Tomorrow data check: %d hours available, sufficient: %s",
+                         len(tomorrow_hours), has_sufficient_tomorrow_data)
+
+            if has_sufficient_tomorrow_data:
+                # Sufficient tomorrow data available: show today 00:00 to tomorrow 23:59
                 start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 end_time = start_time + dt.timedelta(days=2) - dt.timedelta(microseconds=1)
             else:
-                # Tomorrow data NOT available: show yesterday 00:00 to today 23:59
+                # Insufficient tomorrow data: show yesterday 00:00 to today 23:59
                 today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 start_time = today_start - dt.timedelta(days=1)
                 end_time = today_start + dt.timedelta(days=1) - dt.timedelta(microseconds=1)

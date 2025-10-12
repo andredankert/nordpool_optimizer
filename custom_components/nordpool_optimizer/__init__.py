@@ -319,12 +319,29 @@ class NordpoolOptimizer:
 
         # Add new periods to persistent storage
         if new_periods:
-            persistent_new_periods = [
-                PersistentOptimalPeriod.from_optimal_period(period, self.device_name)
-                for period in new_periods
-            ]
-            self._persistent_periods.extend(persistent_new_periods)
-            _LOGGER.debug("Added %d new periods for %s", len(new_periods), self.device_name)
+            # Apply merging logic for absolute mode (daily mode keeps separate periods per day)
+            if self.mode == CONF_MODE_ABSOLUTE:
+                merged_periods = self._merge_consecutive_periods(new_periods)
+                _LOGGER.debug("Merged %d new periods into %d consecutive periods for %s",
+                            len(new_periods), len(merged_periods), self.device_name)
+            else:
+                merged_periods = new_periods
+
+            # Final safety check: ensure merged periods don't overlap with existing ones
+            final_periods = []
+            for period in merged_periods:
+                if not self._overlaps_with_existing_periods(period.start_time, period.end_time):
+                    final_periods.append(period)
+                else:
+                    _LOGGER.warning("Skipping overlapping merged period %s for %s", period, self.device_name)
+
+            if final_periods:
+                persistent_new_periods = [
+                    PersistentOptimalPeriod.from_optimal_period(period, self.device_name)
+                    for period in final_periods
+                ]
+                self._persistent_periods.extend(persistent_new_periods)
+                _LOGGER.debug("Added %d merged periods for %s", len(final_periods), self.device_name)
 
         # Clean up old periods and save to cache
         self._cleanup_old_periods()
