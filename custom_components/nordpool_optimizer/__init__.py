@@ -69,11 +69,6 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         await optimizer.async_setup()
         hass.data[DOMAIN][config_entry.entry_id] = optimizer
 
-        # Add options update listener to trigger recalculation on fee changes
-        config_entry.async_on_unload(
-            config_entry.add_update_listener(async_options_update_listener)
-        )
-
     if config_entry is not None:
         if config_entry.source == SOURCE_IMPORT:
             hass.async_create_task(
@@ -99,18 +94,6 @@ async def async_reload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> 
     await async_unload_entry(hass, config_entry)
     await async_setup_entry(hass, config_entry)
 
-
-async def async_options_update_listener(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
-    """Handle options update for global fee settings."""
-    _LOGGER.debug("Global fee options updated, triggering recalculation for all optimizers")
-
-    # Update all optimizers when global fee options change
-    domain_data = hass.data.get(DOMAIN, {})
-    for optimizer in domain_data.values():
-        if isinstance(optimizer, NordpoolOptimizer):
-            # Force price update and recalculation
-            optimizer.update(force_price_update=True)
-            _LOGGER.debug("Triggered recalculation for optimizer: %s", optimizer.device_name)
 
 
 async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
