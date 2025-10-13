@@ -394,7 +394,14 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
             # Fallback if no price data
             start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
             end_time = start_time + dt.timedelta(days=1) - dt.timedelta(microseconds=1)
+            _LOGGER.debug("FALLBACK: No price data available, using today-only range")
         else:
+            # Log what price data is actually available
+            if all_prices:
+                first_price_time = all_prices[0]["start"]
+                last_price_time = all_prices[-1]["start"]
+                _LOGGER.debug("Available price data: %d entries from %s to %s",
+                             len(all_prices), first_price_time, last_price_time)
             # Check if we have sufficient tomorrow's data (at least 12 hours coverage)
             tomorrow_start = now.replace(hour=0, minute=0, second=0, microsecond=0) + dt.timedelta(days=1)
             tomorrow_end = tomorrow_start + dt.timedelta(days=1)
@@ -419,11 +426,15 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
                 # Sufficient tomorrow data available: show today 00:00 to tomorrow 23:59
                 start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 end_time = start_time + dt.timedelta(days=2) - dt.timedelta(microseconds=1)
+                _LOGGER.debug("Time range: TODAY-TOMORROW (sufficient data) from %s to %s",
+                             start_time.strftime('%Y-%m-%d %H:%M'), end_time.strftime('%Y-%m-%d %H:%M'))
             else:
-                # Insufficient tomorrow data: show yesterday 00:00 to today 23:59
+                # Insufficient tomorrow data: show yesterday + today
                 today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 start_time = today_start - dt.timedelta(days=1)
                 end_time = today_start + dt.timedelta(days=1) - dt.timedelta(microseconds=1)
+                _LOGGER.debug("Time range: YESTERDAY-TODAY (insufficient tomorrow data) from %s to %s",
+                             start_time.strftime('%Y-%m-%d %H:%M'), end_time.strftime('%Y-%m-%d %H:%M'))
         prices_ahead = []
         optimal_periods = []
 
@@ -432,8 +443,30 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         if not all_prices:
             return {"error": "No price data available"}
 
+        # Check if we have the data we need for the calculated time range
+        if all_prices:
+            available_start = min(price["start"] if isinstance(price["start"], dt.datetime)
+                                else dt_util.parse_datetime(price["start"]) for price in all_prices)
+            available_end = max(price["start"] if isinstance(price["start"], dt.datetime)
+                              else dt_util.parse_datetime(price["start"]) for price in all_prices)
+
+            _LOGGER.debug("Available price data spans: %s to %s",
+                         available_start.strftime('%Y-%m-%d %H:%M'),
+                         available_end.strftime('%Y-%m-%d %H:%M'))
+
+            # If we need data before what's available, adjust the start time
+            if start_time < available_start:
+                old_start = start_time
+                start_time = available_start
+                _LOGGER.debug("Adjusted start time from %s to %s (data not available)",
+                             old_start.strftime('%Y-%m-%d %H:%M'),
+                             start_time.strftime('%Y-%m-%d %H:%M'))
+
         # Build unique price data with optimal device info
         price_map = {}  # Use dict to avoid duplicates by timestamp
+
+        _LOGGER.debug("Filtering prices: total available=%d, time range %s to %s",
+                     len(all_prices), start_time.strftime('%Y-%m-%d %H:%M'), end_time.strftime('%Y-%m-%d %H:%M'))
 
         for price_data in all_prices:
             price_time = price_data["start"]
@@ -462,6 +495,8 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
 
         # Convert map back to list, sorted by time
         prices_ahead = sorted(price_map.values(), key=lambda x: x["time"])
+
+        _LOGGER.debug("Price filtering result: %d prices included in range", len(prices_ahead))
 
         # Collect optimal periods from all devices with row-based positioning
         device_color_map = {}
