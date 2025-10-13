@@ -15,6 +15,7 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, UnitOfTime
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.util import dt as dt_util
 
 from . import NordpoolOptimizer, NordpoolOptimizerEntity
@@ -327,6 +328,7 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         self._attr_icon = "mdi:chart-line"
         self._attr_device_class = SensorDeviceClass.MONETARY
         self._attr_native_unit_of_measurement = None  # Will be set from price data
+        self._minutely_update = None
 
     @property
     def native_value(self) -> float | None:
@@ -408,10 +410,10 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
                     # Add the hour to our set
                     tomorrow_hours.add(price_time.hour)
 
-            # Require at least 12 hours of tomorrow data for sufficient coverage
-            has_sufficient_tomorrow_data = len(tomorrow_hours) >= 12
-            _LOGGER.debug("Tomorrow data check: %d hours available, sufficient: %s",
-                         len(tomorrow_hours), has_sufficient_tomorrow_data)
+            # Require at least 24 hours of tomorrow data for sufficient coverage (full day)
+            has_sufficient_tomorrow_data = len(tomorrow_hours) >= 24
+            _LOGGER.debug("Tomorrow data check: %d unique hours found: %s, sufficient: %s",
+                         len(tomorrow_hours), sorted(list(tomorrow_hours)) if tomorrow_hours else "none", has_sufficient_tomorrow_data)
 
             if has_sufficient_tomorrow_data:
                 # Sufficient tomorrow data available: show today 00:00 to tomorrow 23:59
@@ -583,6 +585,12 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         """Called when any optimizer updates."""
         self.schedule_update_ha_state()
 
+    def minutely_time_update(self, _) -> None:
+        """Update current time marker every minute for live chart updates."""
+        # Only update the state to refresh time-sensitive attributes like current_time
+        # This doesn't recalculate price data, just updates the time marker
+        self.schedule_update_ha_state()
+
     def force_discovery_update(self) -> None:
         """Force an immediate discovery update to pick up new devices."""
         # This will trigger _get_all_optimizers which will auto-register new devices
@@ -598,8 +606,18 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         for optimizer in optimizers:
             optimizer.register_output_listener_entity(self, f"graph_{self.unique_id}")
 
+        # Register minutely updates for live time marker updates
+        self._minutely_update = async_track_time_change(
+            self.hass, self.minutely_time_update, second=0
+        )
+
     async def async_will_remove_from_hass(self) -> None:
         """Cleanup when entity is removed."""
+        # Cleanup minutely time update listener
+        if self._minutely_update:
+            self._minutely_update()
+            self._minutely_update = None
+
         # Note: In a full implementation, we'd need to unregister from optimizers
         # but the current optimizer cleanup handles this automatically
         await super().async_will_remove_from_hass()
