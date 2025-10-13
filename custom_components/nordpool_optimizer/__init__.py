@@ -158,7 +158,7 @@ class NordpoolOptimizer:
         self.time_window = self._config.data.get(CONF_TIME_WINDOW, "")
 
         # Input entities
-        self._prices_entity = PricesEntity(self._config.data[CONF_PRICES_ENTITY], hass)
+        self._prices_entity = PricesEntity(self._config.data[CONF_PRICES_ENTITY], hass, self)
 
         # Output entities
         self._output_listeners: dict[str, NordpoolOptimizerEntity] = {}
@@ -174,6 +174,7 @@ class NordpoolOptimizer:
         self._period_cache_file = Path(hass.config.config_dir) / "custom_components" / "nordpool_optimizer" / "cache" / f"periods_{self.device_name.replace(' ', '_').lower()}.pkl"
 
         # Configuration change tracking
+        self._cached_fee_settings = self._get_initial_fee_settings()
         self._last_config_hash = self._get_config_hash()
 
     def as_dict(self):
@@ -182,6 +183,33 @@ class NordpoolOptimizer:
             k: v for k, v in self.__dict__.items()
             if not k.startswith("_") or k in ["_config", "_optimizer_status"]
         }
+
+    def _get_initial_fee_settings(self) -> dict[str, float]:
+        """Get initial fee settings safely during setup."""
+        try:
+            # Try to get fee settings from any config entry for this domain
+            for entry in self._hass.config_entries.async_entries(DOMAIN):
+                options = entry.options
+                return {
+                    "tax_percentage": options.get(CONF_TAX_PERCENTAGE, DEFAULT_TAX_PERCENTAGE),
+                    "provider_fee": options.get(CONF_PROVIDER_FEE, DEFAULT_PROVIDER_FEE),
+                    "network_fee": options.get(CONF_NETWORK_FEE, DEFAULT_NETWORK_FEE),
+                }
+        except Exception:
+            # If anything goes wrong, return defaults
+            pass
+
+        # Fallback to defaults
+        return {
+            "tax_percentage": DEFAULT_TAX_PERCENTAGE,
+            "provider_fee": DEFAULT_PROVIDER_FEE,
+            "network_fee": DEFAULT_NETWORK_FEE,
+        }
+
+    def refresh_fee_settings(self) -> None:
+        """Refresh cached fee settings from config entries."""
+        self._cached_fee_settings = self._get_initial_fee_settings()
+        _LOGGER.debug("Refreshed fee settings for %s: %s", self.device_name, self._cached_fee_settings)
 
     async def async_setup(self):
         """Post initialization setup."""
@@ -666,12 +694,11 @@ class NordpoolOptimizer:
             'time_window': self.time_window,
         }
 
-        # Include global fee settings in configuration hash
-        fee_settings = self._prices_entity._get_global_fee_settings()
+        # Include global fee settings in configuration hash (using cached values)
         config_data.update({
-            'global_tax_percentage': fee_settings['tax_percentage'],
-            'global_provider_fee': fee_settings['provider_fee'],
-            'global_network_fee': fee_settings['network_fee'],
+            'global_tax_percentage': self._cached_fee_settings['tax_percentage'],
+            'global_provider_fee': self._cached_fee_settings['provider_fee'],
+            'global_network_fee': self._cached_fee_settings['network_fee'],
         })
 
         config_str = str(sorted(config_data.items()))
@@ -880,11 +907,12 @@ class NordpoolOptimizer:
 class PricesEntity:
     """Representation for Nordpool state."""
 
-    def __init__(self, unique_id: str, hass: HomeAssistant = None) -> None:
+    def __init__(self, unique_id: str, hass: HomeAssistant = None, optimizer: 'NordpoolOptimizer' = None) -> None:
         """Initialize state tracker."""
         self._unique_id = unique_id
         self._np = None
         self._hass = hass
+        self._optimizer = optimizer
         self._cache_file = None
         if hass:
             self._cache_file = Path(hass.config.config_dir) / "nordpool_optimizer_cache.pkl"
@@ -894,24 +922,11 @@ class PricesEntity:
         return self.__dict__
 
     def _get_global_fee_settings(self) -> dict[str, float]:
-        """Get global fee settings from integration options."""
-        if not self._hass:
-            return {
-                "tax_percentage": DEFAULT_TAX_PERCENTAGE,
-                "provider_fee": DEFAULT_PROVIDER_FEE,
-                "network_fee": DEFAULT_NETWORK_FEE,
-            }
+        """Get global fee settings from optimizer's cached values."""
+        if self._optimizer and hasattr(self._optimizer, '_cached_fee_settings'):
+            return self._optimizer._cached_fee_settings
 
-        # Find any config entry for this domain to get global options
-        for entry in self._hass.config_entries.async_entries(DOMAIN):
-            options = entry.options
-            return {
-                "tax_percentage": options.get(CONF_TAX_PERCENTAGE, DEFAULT_TAX_PERCENTAGE),
-                "provider_fee": options.get(CONF_PROVIDER_FEE, DEFAULT_PROVIDER_FEE),
-                "network_fee": options.get(CONF_NETWORK_FEE, DEFAULT_NETWORK_FEE),
-            }
-
-        # Fallback to defaults if no entries found
+        # Fallback to defaults if optimizer not available
         return {
             "tax_percentage": DEFAULT_TAX_PERCENTAGE,
             "provider_fee": DEFAULT_PROVIDER_FEE,
