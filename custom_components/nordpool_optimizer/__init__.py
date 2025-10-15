@@ -392,33 +392,38 @@ class NordpoolOptimizer:
             listener.update_callback()
 
     def _calculate_absolute_periods(self, now: dt.datetime) -> list[OptimalPeriod]:
-        """Calculate optimal periods for absolute mode."""
+        """Calculate optimal periods for absolute mode using 15-minute granularity."""
         periods = []
 
         # Look ahead up to 48 hours for price data
         end_time = now + dt.timedelta(hours=48)
 
-        # Check each hour to see if it meets the threshold
-        current_hour = now.replace(minute=0, second=0, microsecond=0)
+        # Check each 15-minute slot to see if it meets the threshold
+        # Round current time to nearest 15-minute boundary
+        minutes = now.minute
+        rounded_minutes = (minutes // 15) * 15
+        current_slot = now.replace(minute=rounded_minutes, second=0, microsecond=0)
 
-        while current_hour < end_time:
-            # Check if this hour is within time window (if enabled)
-            if self.time_window_enabled and not self._is_in_time_window(current_hour):
-                current_hour += dt.timedelta(hours=1)
+        duration_timedelta = dt.timedelta(hours=self.duration)
+
+        while current_slot < end_time:
+            # Check if this slot is within time window (if enabled)
+            if self.time_window_enabled and not self._is_in_time_window(current_slot):
+                current_slot += dt.timedelta(minutes=15)
                 continue
 
-            # Get price group for the duration starting at this hour
-            period_end = current_hour + dt.timedelta(hours=self.duration)
-            price_group = self._prices_entity.get_prices_group(current_hour, period_end)
+            # Get price group for the duration starting at this slot
+            period_end = current_slot + duration_timedelta
+            price_group = self._prices_entity.get_prices_group(current_slot, period_end)
 
             if price_group.valid and price_group.average <= self.price_threshold:
                 periods.append(OptimalPeriod(
-                    start_time=current_hour,
+                    start_time=current_slot,
                     end_time=period_end,
                     average_price=price_group.average
                 ))
 
-            current_hour += dt.timedelta(hours=1)
+            current_slot += dt.timedelta(minutes=15)
 
         return periods
 
@@ -445,68 +450,86 @@ class NordpoolOptimizer:
         return periods
 
     def _find_consecutive_daily_period(self, day_start: dt.datetime, day_end: dt.datetime) -> OptimalPeriod | None:
-        """Find the cheapest consecutive period in a day."""
+        """Find the cheapest consecutive period in a day using 15-minute granularity."""
         best_period = None
         best_price = float('inf')
 
-        # Try each possible starting hour
-        current_hour = day_start
-        while current_hour + dt.timedelta(hours=self.duration) <= day_end:
-            # Check if this hour is within time window (if enabled)
-            if self.time_window_enabled and not self._is_in_time_window(current_hour):
-                current_hour += dt.timedelta(hours=1)
+        # Try each possible starting 15-minute slot
+        current_slot = day_start
+        duration_timedelta = dt.timedelta(hours=self.duration)
+
+        while current_slot + duration_timedelta <= day_end:
+            # Check if this slot is within time window (if enabled)
+            if self.time_window_enabled and not self._is_in_time_window(current_slot):
+                current_slot += dt.timedelta(minutes=15)
                 continue
 
-            period_end = current_hour + dt.timedelta(hours=self.duration)
-            price_group = self._prices_entity.get_prices_group(current_hour, period_end)
+            period_end = current_slot + duration_timedelta
+            price_group = self._prices_entity.get_prices_group(current_slot, period_end)
 
             if price_group.valid and price_group.average < best_price:
                 best_price = price_group.average
                 best_period = OptimalPeriod(
-                    start_time=current_hour,
+                    start_time=current_slot,
                     end_time=period_end,
                     average_price=price_group.average
                 )
+                _LOGGER.debug("New best consecutive period for %s: %s-%s, avg price: %.3f",
+                             self.device_name, current_slot.strftime('%H:%M'), period_end.strftime('%H:%M'), best_price)
 
-            current_hour += dt.timedelta(hours=1)
+            current_slot += dt.timedelta(minutes=15)
+
+        if best_period:
+            _LOGGER.debug("Final best consecutive period for %s: %s-%s, avg price: %.3f",
+                         self.device_name, best_period.start_time.strftime('%H:%M'),
+                         best_period.end_time.strftime('%H:%M'), best_period.average_price)
 
         return best_period
 
     def _find_separate_daily_periods(self, day_start: dt.datetime, day_end: dt.datetime) -> list[OptimalPeriod]:
-        """Find the cheapest separate hours in a day."""
-        # Get all hourly prices for the day
-        hourly_prices = []
-        current_hour = day_start
+        """Find the cheapest separate 15-minute slots in a day."""
+        # Get all 15-minute prices for the day
+        slot_prices = []
+        current_slot = day_start
 
-        while current_hour < day_end:
-            # Check if this hour is within time window (if enabled)
-            if self.time_window_enabled and not self._is_in_time_window(current_hour):
-                current_hour += dt.timedelta(hours=1)
+        while current_slot < day_end:
+            # Check if this slot is within time window (if enabled)
+            if self.time_window_enabled and not self._is_in_time_window(current_slot):
+                current_slot += dt.timedelta(minutes=15)
                 continue
 
-            hour_end = current_hour + dt.timedelta(hours=1)
-            price_group = self._prices_entity.get_prices_group(current_hour, hour_end)
+            slot_end = current_slot + dt.timedelta(minutes=15)
+            price_group = self._prices_entity.get_prices_group(current_slot, slot_end)
 
             if price_group.valid:
-                hourly_prices.append({
-                    'hour': current_hour,
+                slot_prices.append({
+                    'slot': current_slot,
                     'price': price_group.average
                 })
 
-            current_hour += dt.timedelta(hours=1)
+            current_slot += dt.timedelta(minutes=15)
 
-        # Sort by price and take the cheapest hours
-        hourly_prices.sort(key=lambda x: x['price'])
-        cheapest_hours = hourly_prices[:min(self.duration, len(hourly_prices))]
+        # Sort by price and take the cheapest slots
+        # Duration in hours * 4 slots per hour = total slots needed
+        total_slots_needed = int(self.duration * 4)
+        slot_prices.sort(key=lambda x: x['price'])
+        cheapest_slots = slot_prices[:min(total_slots_needed, len(slot_prices))]
 
-        # Create periods for each hour
+        _LOGGER.debug("Separate mode for %s: need %d slots (%.1f hours), found %d cheapest slots",
+                     self.device_name, total_slots_needed, self.duration, len(cheapest_slots))
+
+        # Create periods for each 15-minute slot
         periods = []
-        for hour_data in cheapest_hours:
+        for slot_data in cheapest_slots:
             periods.append(OptimalPeriod(
-                start_time=hour_data['hour'],
-                end_time=hour_data['hour'] + dt.timedelta(hours=1),
-                average_price=hour_data['price']
+                start_time=slot_data['slot'],
+                end_time=slot_data['slot'] + dt.timedelta(minutes=15),
+                average_price=slot_data['price']
             ))
+            _LOGGER.debug("Selected separate slot for %s: %s-%s, price: %.3f",
+                         self.device_name, slot_data['slot'].strftime('%H:%M'),
+                         (slot_data['slot'] + dt.timedelta(minutes=15)).strftime('%H:%M'),
+                         slot_data['price'])
 
         return periods
 
@@ -585,32 +608,40 @@ class NordpoolOptimizer:
         return calculation_start
 
     def _calculate_absolute_periods_from(self, start_time: dt.datetime, now: dt.datetime) -> list[OptimalPeriod]:
-        """Calculate optimal periods for absolute mode from specific start time."""
+        """Calculate optimal periods for absolute mode from specific start time using 15-minute granularity."""
         periods = []
         end_time = now + dt.timedelta(hours=48)
 
-        current_hour = start_time.replace(minute=0, second=0, microsecond=0)
+        # Round start time to nearest 15-minute boundary
+        minutes = start_time.minute
+        rounded_minutes = (minutes // 15) * 15
+        current_slot = start_time.replace(minute=rounded_minutes, second=0, microsecond=0)
 
-        while current_hour < end_time:
-            # Check if this hour is within time window (if enabled)
-            if self.time_window_enabled and not self._is_in_time_window(current_hour):
-                current_hour += dt.timedelta(hours=1)
+        duration_timedelta = dt.timedelta(hours=self.duration)
+
+        while current_slot < end_time:
+            # Check if this slot is within time window (if enabled)
+            if self.time_window_enabled and not self._is_in_time_window(current_slot):
+                current_slot += dt.timedelta(minutes=15)
                 continue
 
-            # Get price group for the duration starting at this hour
-            period_end = current_hour + dt.timedelta(hours=self.duration)
-            price_group = self._prices_entity.get_prices_group(current_hour, period_end)
+            # Get price group for the duration starting at this slot
+            period_end = current_slot + duration_timedelta
+            price_group = self._prices_entity.get_prices_group(current_slot, period_end)
 
             if price_group.valid and price_group.average <= self.price_threshold:
                 # Check if this period overlaps with existing active periods
-                if not self._overlaps_with_existing_periods(current_hour, period_end):
+                if not self._overlaps_with_existing_periods(current_slot, period_end):
                     periods.append(OptimalPeriod(
-                        start_time=current_hour,
+                        start_time=current_slot,
                         end_time=period_end,
                         average_price=price_group.average
                     ))
+                    _LOGGER.debug("Found absolute mode period for %s: %s-%s, avg price: %.3f (threshold: %.3f)",
+                                 self.device_name, current_slot.strftime('%H:%M'), period_end.strftime('%H:%M'),
+                                 price_group.average, self.price_threshold)
 
-            current_hour += dt.timedelta(hours=1)
+            current_slot += dt.timedelta(minutes=15)
 
         return periods
 
