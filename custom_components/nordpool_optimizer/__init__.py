@@ -1127,14 +1127,11 @@ class PricesEntity:
         self, start: dt.datetime, end: dt.datetime
     ) -> NordpoolPricesGroup:
         """Get a range of prices from NP given the start and end datetimes."""
-        started = False
         selected = []
         for p in self._all_prices:
-            if p["start"] > start - dt.timedelta(hours=1):
-                started = True
-            if p["start"] > end:
-                break
-            if started:
+            price_start = p["start"]
+            # Include price slots that start within our time range [start, end)
+            if start <= price_start < end:
                 selected.append(p)
         return NordpoolPricesGroup(selected)
 
