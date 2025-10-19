@@ -170,7 +170,6 @@ class NordpoolOptimizer:
 
         # Persistent period storage
         self._persistent_periods: list[PersistentOptimalPeriod] = []
-        self._last_calculation_end_time: dt.datetime | None = None
         self._period_cache_file = Path(hass.config.config_dir) / "custom_components" / "nordpool_optimizer" / "cache" / f"periods_{self.device_name.replace(' ', '_').lower()}.pkl"
 
         # Configuration change tracking
@@ -349,8 +348,11 @@ class NordpoolOptimizer:
         if self._check_configuration_changed():
             self._handle_configuration_change(now)
 
-        # Only calculate new periods for data we haven't processed yet
-        new_periods = self._calculate_incremental_periods(now)
+        # Clear future planned periods before recalculation
+        self._clear_future_periods(now)
+
+        # Calculate ALL optimal periods from now until end of available data
+        new_periods = self._calculate_all_periods(now)
 
         # Add new periods to persistent storage
         if new_periods:
@@ -362,21 +364,13 @@ class NordpoolOptimizer:
             else:
                 merged_periods = new_periods
 
-            # Final safety check: ensure merged periods don't overlap with existing ones
-            final_periods = []
-            for period in merged_periods:
-                if not self._overlaps_with_existing_periods(period.start_time, period.end_time):
-                    final_periods.append(period)
-                else:
-                    _LOGGER.warning("Skipping overlapping merged period %s for %s", period, self.device_name)
-
-            if final_periods:
-                persistent_new_periods = [
-                    PersistentOptimalPeriod.from_optimal_period(period, self.device_name)
-                    for period in final_periods
-                ]
-                self._persistent_periods.extend(persistent_new_periods)
-                _LOGGER.debug("Added %d merged periods for %s", len(final_periods), self.device_name)
+            # Add all merged periods to persistent storage
+            persistent_new_periods = [
+                PersistentOptimalPeriod.from_optimal_period(period, self.device_name)
+                for period in merged_periods
+            ]
+            self._persistent_periods.extend(persistent_new_periods)
+            _LOGGER.debug("Added %d periods for %s", len(merged_periods), self.device_name)
 
         # Clean up old periods and save to cache
         self._cleanup_old_periods()
@@ -559,152 +553,30 @@ class NordpoolOptimizer:
             _LOGGER.warning("Invalid time window format: %s", self.time_window)
             return True
 
-    def _calculate_incremental_periods(self, now: dt.datetime) -> list[OptimalPeriod]:
-        """Calculate optimal periods incrementally - only for new data."""
-        # Determine calculation start time
-        calculation_start = self._get_calculation_start_time(now)
 
-        if calculation_start is None:
-            _LOGGER.debug("No new data to calculate for %s", self.device_name)
-            return []
+    def _clear_future_periods(self, now: dt.datetime) -> None:
+        """Clear future planned periods before recalculation."""
+        initial_count = len(self._persistent_periods)
 
-        _LOGGER.debug("Calculating periods for %s from %s", self.device_name, calculation_start)
+        # Remove all future planned periods (keep completed and active ones)
+        self._persistent_periods = [
+            period for period in self._persistent_periods
+            if period.status in ["completed", "active"] or period.start_time <= now
+        ]
 
-        # Calculate periods based on mode, but only for the new time window
+        removed_count = initial_count - len(self._persistent_periods)
+        if removed_count > 0:
+            _LOGGER.debug("Cleared %d future periods for %s before recalculation",
+                         removed_count, self.device_name)
+
+    def _calculate_all_periods(self, now: dt.datetime) -> list[OptimalPeriod]:
+        """Calculate ALL optimal periods from now until end of available data."""
         if self.mode == CONF_MODE_ABSOLUTE:
-            new_periods = self._calculate_absolute_periods_from(calculation_start, now)
+            return self._calculate_absolute_periods(now)
         elif self.mode == CONF_MODE_DAILY:
-            new_periods = self._calculate_daily_periods_from(calculation_start, now)
+            return self._calculate_daily_periods(now)
         else:
-            new_periods = []
-
-        # Update last calculation end time
-        if new_periods:
-            end_time = now + dt.timedelta(hours=48)  # Look ahead window
-            self._last_calculation_end_time = end_time
-
-        return new_periods
-
-    def _get_calculation_start_time(self, now: dt.datetime) -> dt.datetime | None:
-        """Determine where to start calculating new periods."""
-        # If we have no calculation history, start from now
-        if self._last_calculation_end_time is None:
-            return now.replace(minute=0, second=0, microsecond=0)
-
-        # Find the latest end time from existing periods to avoid overlaps
-        latest_end = self._last_calculation_end_time
-        for period in self._persistent_periods:
-            if period.status != "cancelled" and period.end_time > latest_end:
-                latest_end = period.end_time
-
-        # Start calculation from the latest end time, but at least from now
-        calculation_start = max(latest_end, now.replace(minute=0, second=0, microsecond=0))
-
-        # Check if we actually have new price data to process
-        price_data_end = now + dt.timedelta(hours=48)
-        if calculation_start >= price_data_end:
-            return None  # No new data to process
-
-        return calculation_start
-
-    def _calculate_absolute_periods_from(self, start_time: dt.datetime, now: dt.datetime) -> list[OptimalPeriod]:
-        """Calculate optimal periods for absolute mode from specific start time using 15-minute granularity."""
-        periods = []
-        end_time = now + dt.timedelta(hours=48)
-
-        # Round start time to nearest 15-minute boundary
-        minutes = start_time.minute
-        rounded_minutes = (minutes // 15) * 15
-        current_slot = start_time.replace(minute=rounded_minutes, second=0, microsecond=0)
-
-        duration_timedelta = dt.timedelta(hours=self.duration)
-
-        while current_slot < end_time:
-            # Check if this slot is within time window (if enabled)
-            if self.time_window_enabled and not self._is_in_time_window(current_slot):
-                current_slot += dt.timedelta(minutes=15)
-                continue
-
-            # Get price group for the duration starting at this slot
-            period_end = current_slot + duration_timedelta
-            price_group = self._prices_entity.get_prices_group(current_slot, period_end)
-
-            if price_group.valid and price_group.average <= self.price_threshold:
-                # Check if this period overlaps with existing active periods
-                if not self._overlaps_with_existing_periods(current_slot, period_end):
-                    periods.append(OptimalPeriod(
-                        start_time=current_slot,
-                        end_time=period_end,
-                        average_price=price_group.average
-                    ))
-                    _LOGGER.debug("Found absolute mode period for %s: %s-%s, avg price: %.3f (threshold: %.3f)",
-                                 self.device_name, current_slot.strftime('%H:%M'), period_end.strftime('%H:%M'),
-                                 price_group.average, self.price_threshold)
-
-            current_slot += dt.timedelta(minutes=15)
-
-        return periods
-
-    def _calculate_daily_periods_from(self, start_time: dt.datetime, now: dt.datetime) -> list[OptimalPeriod]:
-        """Calculate optimal periods for daily mode from specific start time."""
-        periods = []
-
-        # Determine which days we need to calculate for
-        start_day = start_time.replace(hour=0, minute=0, second=0, microsecond=0)
-        current_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-
-        # Calculate for days that might have new periods
-        days_to_check = []
-        check_day = start_day
-        end_day = current_day + dt.timedelta(days=2)  # Today and tomorrow
-
-        while check_day < end_day:
-            # Only calculate if we don't already have periods for this day
-            if not self._has_periods_for_day(check_day):
-                days_to_check.append(check_day)
-            check_day += dt.timedelta(days=1)
-
-        for day_start in days_to_check:
-            day_end = day_start + dt.timedelta(days=1)
-
-            if self.slot_type == CONF_SLOT_TYPE_CONSECUTIVE:
-                period = self._find_consecutive_daily_period(day_start, day_end)
-            else:
-                period = self._find_separate_daily_periods(day_start, day_end)
-
-            if period:
-                if isinstance(period, list):
-                    periods.extend(period)
-                else:
-                    periods.append(period)
-
-        return periods
-
-    def _overlaps_with_existing_periods(self, start_time: dt.datetime, end_time: dt.datetime) -> bool:
-        """Check if a time period overlaps with existing non-cancelled periods."""
-        for period in self._persistent_periods:
-            if period.status == "cancelled":
-                continue
-
-            # Check for overlap
-            if (start_time < period.end_time and end_time > period.start_time):
-                return True
-
-        return False
-
-    def _has_periods_for_day(self, day_start: dt.datetime) -> bool:
-        """Check if we already have periods calculated for a specific day."""
-        day_end = day_start + dt.timedelta(days=1)
-
-        for period in self._persistent_periods:
-            if period.status == "cancelled":
-                continue
-
-            # Check if period falls within this day
-            if (period.start_time < day_end and period.end_time > day_start):
-                return True
-
-        return False
+            return []
 
     def _update_period_statuses(self, now: dt.datetime) -> None:
         """Update status of all persistent periods based on current time."""
@@ -754,8 +626,6 @@ class NordpoolOptimizer:
                 period.status = "cancelled"
                 _LOGGER.debug("Cancelled future period: %s", period)
 
-        # Reset calculation end time to force recalculation
-        self._last_calculation_end_time = now
 
         # Save the updated periods
         self.save_period_cache()
@@ -843,7 +713,6 @@ class NordpoolOptimizer:
 
             # Load persistent periods and update their status
             self._persistent_periods = cache_data.get('periods', [])
-            self._last_calculation_end_time = cache_data.get('last_calculation_end_time')
 
             # Update period statuses based on current time
             now = dt_util.now()
@@ -871,7 +740,6 @@ class NordpoolOptimizer:
                 'device_id': self.device_name,
                 'timestamp': dt_util.now().isoformat(),
                 'periods': self._persistent_periods,
-                'last_calculation_end_time': self._last_calculation_end_time,
             }
 
             # Ensure cache directory exists
