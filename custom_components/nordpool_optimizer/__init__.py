@@ -64,11 +64,18 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
     if DOMAIN not in hass.data:
         hass.data[DOMAIN] = {}
 
-    # Always create a new optimizer instance (will be new after unload during reload)
-    if config_entry.entry_id not in hass.data[DOMAIN]:
-        optimizer = NordpoolOptimizer(hass, config_entry)
-        await optimizer.async_setup()
-        hass.data[DOMAIN][config_entry.entry_id] = optimizer
+    # Always create a new optimizer instance
+    # During reload, the old one should have been removed by async_unload_entry
+    if config_entry.entry_id in hass.data.get(DOMAIN, {}):
+        _LOGGER.warning("Optimizer already exists for entry %s, cleaning up old instance", config_entry.entry_id)
+        old_optimizer = hass.data[DOMAIN].pop(config_entry.entry_id)
+        old_optimizer.cleanup()
+    
+    # Create fresh optimizer instance
+    _LOGGER.debug("Creating new optimizer instance for entry: %s", config_entry.entry_id)
+    optimizer = NordpoolOptimizer(hass, config_entry)
+    await optimizer.async_setup()
+    hass.data[DOMAIN][config_entry.entry_id] = optimizer
 
     if config_entry is not None:
         if config_entry.source == SOURCE_IMPORT:
@@ -86,9 +93,13 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         
         async def _trigger_update_after_setup():
             """Trigger update after a short delay to ensure entities are registered."""
-            # Small delay to ensure all entities have completed async_added_to_hass
-            await hass.async_add_executor_job(lambda: None)  # Yield to event loop
             try:
+                # Small delay to ensure all entities have completed async_added_to_hass
+                # Use asyncio.sleep instead of executor to properly yield
+                import asyncio
+                await asyncio.sleep(0.1)  # 100ms delay
+                
+                _LOGGER.debug("Triggering update after reconfiguration for %s", optimizer.device_name)
                 # Run update in executor but ensure errors are caught
                 await hass.async_add_executor_job(optimizer.update, True)
                 _LOGGER.debug("Successfully triggered update after reconfiguration for %s", optimizer.device_name)
@@ -103,17 +114,37 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unloading a config_flow entry."""
+    _LOGGER.debug("Unloading optimizer entry: %s", entry.entry_id)
+    
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        optimizer = hass.data[DOMAIN].pop(entry.entry_id)
-        optimizer.cleanup()
+        # Get and cleanup optimizer if it exists
+        if DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]:
+            optimizer = hass.data[DOMAIN].pop(entry.entry_id)
+            optimizer.cleanup()
+            _LOGGER.debug("Cleaned up optimizer for entry: %s", entry.entry_id)
+        else:
+            _LOGGER.debug("No optimizer found for entry: %s", entry.entry_id)
+    
     return unload_ok
 
 
 async def async_reload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
-    """Reload the config entry."""
+    """Reload the config entry - completely remove old and create new."""
+    _LOGGER.info("Reloading optimizer entry: %s (device: %s)", 
+                 config_entry.entry_id, config_entry.data.get(CONF_DEVICE_NAME, 'unknown'))
+    
+    # Completely unload and remove old optimizer
     await async_unload_entry(hass, config_entry)
+    
+    # Small delay to ensure cleanup completes and entities are fully removed
+    import asyncio
+    await asyncio.sleep(0.2)
+    
+    # Now set up fresh - this will create a completely new optimizer instance
     await async_setup_entry(hass, config_entry)
+    
+    _LOGGER.info("Reload completed for optimizer entry: %s", config_entry.entry_id)
 
 
 
@@ -164,6 +195,7 @@ class NordpoolOptimizer:
         self._hass = hass
         self._config = config_entry
         self._state_change_listeners = []
+        self._is_cleaned_up = False  # Flag to prevent updates after cleanup
 
         # Configuration
         self.device_name = self._config.data[CONF_DEVICE_NAME]
@@ -278,6 +310,8 @@ class NordpoolOptimizer:
 
     def cleanup(self):
         """Cleanup by removing event listeners."""
+        _LOGGER.debug("Cleaning up optimizer for %s", self.device_name)
+        self._is_cleaned_up = True
         for listener in self._state_change_listeners:
             listener()
         if self._hourly_update:
@@ -286,6 +320,7 @@ class NordpoolOptimizer:
             self._minutely_update()
         # Clear output listeners to prevent stale references
         self._output_listeners.clear()
+        _LOGGER.debug("Cleanup completed for %s", self.device_name)
 
     def register_output_listener_entity(
         self, entity: NordpoolOptimizerEntity, conf_key=""
@@ -339,8 +374,13 @@ class NordpoolOptimizer:
 
     def update(self, force_price_update: bool = True):
         """Optimizer update call function."""
+        # Prevent updates after cleanup
+        if self._is_cleaned_up:
+            _LOGGER.debug("Skipping update for %s - optimizer has been cleaned up", self.device_name)
+            return
+        
         try:
-            _LOGGER.debug("Updating optimizer for %s (mode: %s, duration: %s)", 
+            _LOGGER.info("Starting optimizer update for %s (mode: %s, duration: %s)", 
                          self.device_name, self.mode, self.duration)
 
             # Update price data (unless we're using cached data)
@@ -422,8 +462,11 @@ class NordpoolOptimizer:
             self._last_update = now
 
             # Notify all listeners
+            _LOGGER.debug("Notifying %d listeners for %s", len(self._output_listeners), self.device_name)
             for listener in self._output_listeners.values():
                 listener.update_callback()
+            
+            _LOGGER.info("Completed optimizer update for %s", self.device_name)
                 
         except Exception as e:
             _LOGGER.error("Error during optimizer update for %s: %s", self.device_name, e, exc_info=True)
@@ -810,10 +853,17 @@ class NordpoolOptimizer:
 
             # Use atomic write: write to temp file first, then rename
             temp_file = self._period_cache_file.with_suffix('.tmp')
+            # Write to temp file
             with open(temp_file, 'wb') as f:
                 pickle.dump(cache_data, f)
+            # Ensure temp file was written successfully before renaming
+            if not temp_file.exists():
+                raise OSError(f"Temp file was not created: {temp_file}")
             # Atomic rename (works on most filesystems)
             temp_file.replace(self._period_cache_file)
+            # Verify the rename succeeded
+            if not self._period_cache_file.exists():
+                raise OSError(f"Period cache file was not created after rename: {self._period_cache_file}")
 
             _LOGGER.debug("Saved %d persistent periods to cache for %s",
                          len(self._persistent_periods), self.device_name)
@@ -1026,14 +1076,21 @@ class PricesEntity:
             }
 
             # Ensure cache directory exists
-            self._cache_file.parent.mkdir(exist_ok=True)
+            self._cache_file.parent.mkdir(parents=True, exist_ok=True)
 
             # Use atomic write: write to temp file first, then rename
             temp_file = self._cache_file.with_suffix('.tmp')
+            # Write to temp file
             with open(temp_file, 'wb') as f:
                 pickle.dump(cache_data, f)
+            # Ensure temp file was written successfully before renaming
+            if not temp_file.exists():
+                raise OSError(f"Temp file was not created: {temp_file}")
             # Atomic rename (works on most filesystems)
             temp_file.replace(self._cache_file)
+            # Verify the rename succeeded
+            if not self._cache_file.exists():
+                raise OSError(f"Cache file was not created after rename: {self._cache_file}")
 
             _LOGGER.debug("Saved price data cache for %s", self._unique_id)
 
