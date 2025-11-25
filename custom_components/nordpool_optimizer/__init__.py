@@ -80,10 +80,23 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
     await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
     
     # Trigger update after entities are set up so they receive the initial state
+    # Use a callback to ensure it runs after entities are fully registered
     if config_entry.entry_id in hass.data[DOMAIN]:
         optimizer = hass.data[DOMAIN][config_entry.entry_id]
-        # Schedule update in executor to avoid blocking
-        hass.async_add_executor_job(optimizer.update, True)
+        
+        async def _trigger_update_after_setup():
+            """Trigger update after a short delay to ensure entities are registered."""
+            # Small delay to ensure all entities have completed async_added_to_hass
+            await hass.async_add_executor_job(lambda: None)  # Yield to event loop
+            try:
+                # Run update in executor but ensure errors are caught
+                await hass.async_add_executor_job(optimizer.update, True)
+                _LOGGER.debug("Successfully triggered update after reconfiguration for %s", optimizer.device_name)
+            except Exception as e:
+                _LOGGER.error("Failed to update optimizer after reconfiguration for %s: %s", optimizer.device_name, e, exc_info=True)
+        
+        # Schedule the update callback
+        hass.async_create_task(_trigger_update_after_setup())
     
     return True
 
@@ -283,10 +296,21 @@ class NordpoolOptimizer:
             # If it's the same entity instance, skip re-registration silently
             if existing_entity is entity:
                 return
+            # Also check if it's the same entity by unique_id (for graph entity which is global)
+            existing_unique_id = getattr(existing_entity, 'unique_id', None) or getattr(existing_entity, '_attr_unique_id', None)
+            new_unique_id = getattr(entity, 'unique_id', None) or getattr(entity, '_attr_unique_id', None)
+            if existing_unique_id and new_unique_id and existing_unique_id == new_unique_id:
+                # Same logical entity, just update the reference silently
+                self._output_listeners[conf_key] = entity
+                return
+            # Log warning only if it's actually a different entity
+            existing_id = (getattr(existing_entity, 'entity_id', None) or 
+                          getattr(existing_entity, 'unique_id', None) or 
+                          str(existing_entity))
             _LOGGER.warning(
                 'An output listener with key "%s" is overriding previous entity "%s"',
                 conf_key,
-                existing_entity.entity_id if hasattr(existing_entity, 'entity_id') else str(existing_entity),
+                existing_id,
             )
         self._output_listeners[conf_key] = entity
 
@@ -315,89 +339,103 @@ class NordpoolOptimizer:
 
     def update(self, force_price_update: bool = True):
         """Optimizer update call function."""
-        _LOGGER.debug("Updating optimizer for %s", self.device_name)
+        try:
+            _LOGGER.debug("Updating optimizer for %s (mode: %s, duration: %s)", 
+                         self.device_name, self.mode, self.duration)
 
-        # Update price data (unless we're using cached data)
-        if force_price_update:
-            price_updated = self._prices_entity.update(self._hass)
-            _LOGGER.debug("Price entity update result: %s, valid: %s", price_updated, self._prices_entity.valid)
-        else:
-            # Using cached data, just check if valid
-            price_updated = self._prices_entity.valid
-            _LOGGER.debug("Using cached price data, valid: %s", self._prices_entity.valid)
-
-        if not price_updated or not self._prices_entity.valid:
-            _LOGGER.warning("Price entity %s failed to update or is invalid", self._prices_entity.unique_id)
-            self.set_unavailable()
-            self._optimizer_status.status = OptimizerStates.Error
-            self._optimizer_status.running_text = "No valid Price data"
-            return
-
-        # Validate configuration
-        _LOGGER.debug("Configuration check - duration: %s, mode: %s, price_threshold: %s",
-                     self.duration, self.mode, getattr(self, 'price_threshold', 'N/A'))
-
-        if not self.duration or self.duration <= 0:
-            _LOGGER.warning("Aborting update since no valid Duration: %s", self.duration)
-            self._optimizer_status.status = OptimizerStates.Error
-            self._optimizer_status.running_text = "No valid Duration data"
-            return
-
-        # Mode-specific validation
-        if self.mode == CONF_MODE_ABSOLUTE and (not self.price_threshold):
-            _LOGGER.warning("Aborting update since no price threshold for absolute mode: %s", self.price_threshold)
-            self._optimizer_status.status = OptimizerStates.Error
-            self._optimizer_status.running_text = "No valid price threshold"
-            return
-
-        # Set status to OK
-        self._optimizer_status.status = OptimizerStates.Ok
-        self._optimizer_status.running_text = "ok"
-
-        # Update period statuses and calculate new periods incrementally
-        now = dt_util.now()
-        self._update_period_statuses(now)
-
-        # Check for configuration changes and handle them
-        if self._check_configuration_changed():
-            self._handle_configuration_change(now)
-
-        # Clear future planned periods before recalculation
-        self._clear_future_periods(now)
-
-        # Calculate ALL optimal periods from now until end of available data
-        new_periods = self._calculate_all_periods(now)
-
-        # Add new periods to persistent storage
-        if new_periods:
-            # Apply merging logic for absolute mode (daily mode keeps separate periods per day)
-            if self.mode == CONF_MODE_ABSOLUTE:
-                merged_periods = self._merge_consecutive_periods(new_periods)
-                _LOGGER.debug("Merged %d new periods into %d consecutive periods for %s",
-                            len(new_periods), len(merged_periods), self.device_name)
+            # Update price data (unless we're using cached data)
+            if force_price_update:
+                price_updated = self._prices_entity.update(self._hass)
+                _LOGGER.debug("Price entity update result: %s, valid: %s", price_updated, self._prices_entity.valid)
             else:
-                merged_periods = new_periods
+                # Using cached data, just check if valid
+                price_updated = self._prices_entity.valid
+                _LOGGER.debug("Using cached price data, valid: %s", self._prices_entity.valid)
 
-            # Add all merged periods to persistent storage
-            persistent_new_periods = [
-                PersistentOptimalPeriod.from_optimal_period(period, self.device_name)
-                for period in merged_periods
-            ]
-            self._persistent_periods.extend(persistent_new_periods)
-            _LOGGER.debug("Added %d periods for %s", len(merged_periods), self.device_name)
+            if not price_updated or not self._prices_entity.valid:
+                _LOGGER.warning("Price entity %s failed to update or is invalid", self._prices_entity.unique_id)
+                self.set_unavailable()
+                self._optimizer_status.status = OptimizerStates.Error
+                self._optimizer_status.running_text = "No valid Price data"
+                return
 
-        # Clean up old periods and save to cache
-        self._cleanup_old_periods()
-        self.save_period_cache()
+            # Validate configuration
+            _LOGGER.debug("Configuration check - duration: %s, mode: %s, price_threshold: %s",
+                         self.duration, self.mode, getattr(self, 'price_threshold', 'N/A'))
 
-        # Update current_optimal_periods for backwards compatibility
-        self._update_current_optimal_periods()
+            if not self.duration or self.duration <= 0:
+                _LOGGER.warning("Aborting update since no valid Duration: %s", self.duration)
+                self._optimizer_status.status = OptimizerStates.Error
+                self._optimizer_status.running_text = "No valid Duration data"
+                return
 
-        self._last_update = now
+            # Mode-specific validation
+            if self.mode == CONF_MODE_ABSOLUTE and (not self.price_threshold):
+                _LOGGER.warning("Aborting update since no price threshold for absolute mode: %s", self.price_threshold)
+                self._optimizer_status.status = OptimizerStates.Error
+                self._optimizer_status.running_text = "No valid price threshold"
+                return
 
-        # Notify all listeners
-        for listener in self._output_listeners.values():
-            listener.update_callback()
+            # Set status to OK
+            self._optimizer_status.status = OptimizerStates.Ok
+            self._optimizer_status.running_text = "ok"
+
+            # Update period statuses and calculate new periods incrementally
+            now = dt_util.now()
+            self._update_period_statuses(now)
+
+            # Check for configuration changes and handle them
+            if self._check_configuration_changed():
+                self._handle_configuration_change(now)
+
+            # Clear future planned periods before recalculation
+            self._clear_future_periods(now)
+
+            # Calculate ALL optimal periods from now until end of available data
+            new_periods = self._calculate_all_periods(now)
+
+            # Add new periods to persistent storage
+            if new_periods:
+                # Apply merging logic for absolute mode (daily mode keeps separate periods per day)
+                if self.mode == CONF_MODE_ABSOLUTE:
+                    merged_periods = self._merge_consecutive_periods(new_periods)
+                    _LOGGER.debug("Merged %d new periods into %d consecutive periods for %s",
+                                len(new_periods), len(merged_periods), self.device_name)
+                else:
+                    merged_periods = new_periods
+
+                # Add all merged periods to persistent storage
+                persistent_new_periods = [
+                    PersistentOptimalPeriod.from_optimal_period(period, self.device_name)
+                    for period in merged_periods
+                ]
+                self._persistent_periods.extend(persistent_new_periods)
+                _LOGGER.debug("Added %d periods for %s", len(merged_periods), self.device_name)
+
+            # Clean up old periods and save to cache
+            self._cleanup_old_periods()
+            self.save_period_cache()
+
+            # Update current_optimal_periods for backwards compatibility
+            self._update_current_optimal_periods()
+
+            self._last_update = now
+
+            # Notify all listeners
+            for listener in self._output_listeners.values():
+                listener.update_callback()
+                
+        except Exception as e:
+            _LOGGER.error("Error during optimizer update for %s: %s", self.device_name, e, exc_info=True)
+            # Set error state but still notify listeners so they can show error
+            self._optimizer_status.status = OptimizerStates.Error
+            self._optimizer_status.running_text = f"Update error: {str(e)[:50]}"
+            # Still notify listeners so they can update their state
+            for listener in self._output_listeners.values():
+                try:
+                    listener.update_callback()
+                except Exception:
+                    pass  # Ignore errors in listener callbacks
 
     def _calculate_absolute_periods(self, now: dt.datetime) -> list[OptimalPeriod]:
         """Calculate optimal periods for absolute mode using 15-minute granularity."""
@@ -716,6 +754,12 @@ class NordpoolOptimizer:
             return False
 
         try:
+            # Check file size first - if it's suspiciously small or zero, skip
+            file_size = self._period_cache_file.stat().st_size
+            if file_size == 0:
+                _LOGGER.debug("Period cache file is empty, skipping: %s", self._period_cache_file)
+                return False
+            
             with open(self._period_cache_file, 'rb') as f:
                 cache_data = pickle.load(f)
 
@@ -740,8 +784,13 @@ class NordpoolOptimizer:
                          len(self._persistent_periods), self.device_name)
             return True
 
-        except (pickle.PickleError, KeyError, OSError, EOFError) as e:
-            _LOGGER.warning("Failed to load period cache file: %s", e)
+        except (pickle.PickleError, KeyError, OSError, EOFError, ValueError) as e:
+            # If cache is corrupted, delete it and continue without cache
+            _LOGGER.warning("Failed to load period cache file (corrupted?): %s. Removing corrupted cache.", e)
+            try:
+                self._period_cache_file.unlink()
+            except OSError:
+                pass  # Ignore errors deleting corrupted cache
             return False
 
     def save_period_cache(self) -> None:
@@ -759,14 +808,25 @@ class NordpoolOptimizer:
             # Ensure cache directory exists
             self._period_cache_file.parent.mkdir(parents=True, exist_ok=True)
 
-            with open(self._period_cache_file, 'wb') as f:
+            # Use atomic write: write to temp file first, then rename
+            temp_file = self._period_cache_file.with_suffix('.tmp')
+            with open(temp_file, 'wb') as f:
                 pickle.dump(cache_data, f)
+            # Atomic rename (works on most filesystems)
+            temp_file.replace(self._period_cache_file)
 
             _LOGGER.debug("Saved %d persistent periods to cache for %s",
                          len(self._persistent_periods), self.device_name)
 
         except (OSError, pickle.PickleError) as e:
             _LOGGER.warning("Failed to save period cache file: %s", e)
+            # Clean up temp file if it exists
+            try:
+                temp_file = self._period_cache_file.with_suffix('.tmp')
+                if temp_file.exists():
+                    temp_file.unlink()
+            except OSError:
+                pass
 
     def _is_period_cache_valid(self, timestamp_str: str) -> bool:
         """Check if period cache timestamp is recent enough."""
@@ -920,6 +980,12 @@ class PricesEntity:
             return False
 
         try:
+            # Check file size first - if it's suspiciously small or zero, skip
+            file_size = self._cache_file.stat().st_size
+            if file_size == 0:
+                _LOGGER.debug("Cache file is empty, skipping: %s", self._cache_file)
+                return False
+            
             with open(self._cache_file, 'rb') as f:
                 cache_data = pickle.load(f)
 
@@ -938,8 +1004,13 @@ class PricesEntity:
             _LOGGER.debug("Successfully loaded cached price data for %s", self._unique_id)
             return True
 
-        except (pickle.PickleError, KeyError, OSError, EOFError) as e:
-            _LOGGER.warning("Failed to load cache file: %s", e)
+        except (pickle.PickleError, KeyError, OSError, EOFError, ValueError) as e:
+            # If cache is corrupted, delete it and continue without cache
+            _LOGGER.warning("Failed to load cache file (corrupted?): %s. Removing corrupted cache.", e)
+            try:
+                self._cache_file.unlink()
+            except OSError:
+                pass  # Ignore errors deleting corrupted cache
             return False
 
     def save_cache(self) -> None:
@@ -957,13 +1028,24 @@ class PricesEntity:
             # Ensure cache directory exists
             self._cache_file.parent.mkdir(exist_ok=True)
 
-            with open(self._cache_file, 'wb') as f:
+            # Use atomic write: write to temp file first, then rename
+            temp_file = self._cache_file.with_suffix('.tmp')
+            with open(temp_file, 'wb') as f:
                 pickle.dump(cache_data, f)
+            # Atomic rename (works on most filesystems)
+            temp_file.replace(self._cache_file)
 
             _LOGGER.debug("Saved price data cache for %s", self._unique_id)
 
         except (OSError, pickle.PickleError) as e:
             _LOGGER.warning("Failed to save cache file: %s", e)
+            # Clean up temp file if it exists
+            try:
+                temp_file = self._cache_file.with_suffix('.tmp')
+                if temp_file.exists():
+                    temp_file.unlink()
+            except OSError:
+                pass
 
     def _is_cache_valid(self, timestamp_str: str) -> bool:
         """Check if cache timestamp is recent enough."""
