@@ -605,9 +605,14 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
 
                 # Auto-register with new optimizers that haven't been registered yet
                 graph_listener_key = f"graph_{self.unique_id}"
-                if graph_listener_key not in optimizer._output_listeners:
+                existing_listener = optimizer._output_listeners.get(graph_listener_key)
+                # Only register if not already registered with this exact entity instance
+                if existing_listener is not self:
                     optimizer.register_output_listener_entity(self, graph_listener_key)
-                    _LOGGER.debug("Auto-registered graph entity with new optimizer: %s", optimizer.device_name)
+                    if existing_listener is None:
+                        _LOGGER.debug("Auto-registered graph entity with optimizer: %s", optimizer.device_name)
+                    else:
+                        _LOGGER.debug("Re-registered graph entity with optimizer: %s (replaced old listener)", optimizer.device_name)
 
         return optimizers
 

@@ -64,6 +64,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
     if DOMAIN not in hass.data:
         hass.data[DOMAIN] = {}
 
+    # Always create a new optimizer instance (will be new after unload during reload)
     if config_entry.entry_id not in hass.data[DOMAIN]:
         optimizer = NordpoolOptimizer(hass, config_entry)
         await optimizer.async_setup()
@@ -77,6 +78,13 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
             return False
 
     await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
+    
+    # Trigger update after entities are set up so they receive the initial state
+    if config_entry.entry_id in hass.data[DOMAIN]:
+        optimizer = hass.data[DOMAIN][config_entry.entry_id]
+        # Schedule update in executor to avoid blocking
+        hass.async_add_executor_job(optimizer.update, True)
+    
     return True
 
 
@@ -263,16 +271,22 @@ class NordpoolOptimizer:
             self._hourly_update()
         if self._minutely_update:
             self._minutely_update()
+        # Clear output listeners to prevent stale references
+        self._output_listeners.clear()
 
     def register_output_listener_entity(
         self, entity: NordpoolOptimizerEntity, conf_key=""
     ) -> None:
         """Register output entity."""
         if conf_key in self._output_listeners:
+            existing_entity = self._output_listeners.get(conf_key)
+            # If it's the same entity instance, skip re-registration silently
+            if existing_entity is entity:
+                return
             _LOGGER.warning(
                 'An output listener with key "%s" is overriding previous entity "%s"',
                 conf_key,
-                self._output_listeners.get(conf_key).entity_id,
+                existing_entity.entity_id if hasattr(existing_entity, 'entity_id') else str(existing_entity),
             )
         self._output_listeners[conf_key] = entity
 
