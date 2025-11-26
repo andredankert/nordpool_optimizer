@@ -1,212 +1,68 @@
-2025-11-24 20:28:37.240 WARNING (SyncWorker_0) [homeassistant.loader] We found a custom integration nordpool which has not been tested by Home Assistant. This component might cause stability problems, be sure to disable it if you experience issues with Home Assistant
-2025-11-24 20:28:37.244 WARNING (SyncWorker_0) [homeassistant.loader] We found a custom integration hacs which has not been tested by Home Assistant. This component might cause stability problems, be sure to disable it if you experience issues with Home Assistant
-2025-11-24 20:28:37.246 WARNING (SyncWorker_0) [homeassistant.loader] We found a custom integration tibber_custom which has not been tested by Home Assistant. This component might cause stability problems, be sure to disable it if you experience issues with Home Assistant
-2025-11-24 20:28:37.247 WARNING (SyncWorker_0) [homeassistant.loader] We found a custom integration tapo_control which has not been tested by Home Assistant. This component might cause stability problems, be sure to disable it if you experience issues with Home Assistant
-2025-11-24 20:28:37.249 WARNING (SyncWorker_0) [homeassistant.loader] We found a custom integration nordpool_optimizer which has not been tested by Home Assistant. This component might cause stability problems, be sure to disable it if you experience issues with Home Assistant
-2025-11-24 20:28:53.669 WARNING (ImportExecutor_0) [custom_components.nordpool_optimizer.config_flow] Could not import ENTSO-e integration
-2025-11-24 20:29:04.330 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 00:44:19.674 ERROR (Thread-3) [root] Uncaught thread exception
+2025-11-26 22:44:58.558 ERROR (MainThread) [aiohttp.server] Error handling request from 127.0.0.1
 Traceback (most recent call last):
-  File "/usr/local/lib/python3.13/threading.py", line 1043, in _bootstrap_inner
-    self.run()
-    ~~~~~~~~^^
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/mq.py", line 118, in run
-    self.__run_mqtt()
-    ~~~~~~~~~~~~~~~^^
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/mq.py", line 131, in __run_mqtt
-    mq_config = self._get_mqtt_config()
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/mq.py", line 47, in _get_mqtt_config
-    response = self.api.post("/v1.0/m/life/ha/access/config", None,
-                             {"linkId": link_id})
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/customerapi.py", line 192, in post
-    return self.__request("POST", path, params, body)
-           ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/customerapi.py", line 121, in __request
-    raise Exception(f"network error:({ret['code']}) {ret['msg']}")
-Exception: network error:(-9999999) sign invalid
-2025-11-25 01:30:17.055 ERROR (MainThread) [async_upnp_client.ssdp] Received error: [Errno 101] Network unreachable, transport: <_SelectorDatagramTransport fd=92 read=polling write=<idle, bufsize=0>>, socket: <asyncio.TransportSocket fd=92, family=2, type=2, proto=0, laddr=('0.0.0.0', 37136)>
-2025-11-25 01:30:17.056 ERROR (MainThread) [async_upnp_client.ssdp] Received error: [Errno 99] Address not available, transport: <_SelectorDatagramTransport fd=94 read=polling write=<idle, bufsize=0>>, socket: <asyncio.TransportSocket fd=94, family=10, type=2, proto=0, laddr=('::', 53965, 0, 0)>
-2025-11-25 01:30:21.623 ERROR (MainThread) [custom_components.tapo_control] HTTPSConnectionPool(host='192.168.8.111', port=443): Max retries exceeded with url: /stok=QwAl5kBA4QQ5w4h*4Q2jnTwcch72w7ne/ds (Caused by NewConnectionError('<urllib3.connection.HTTPSConnection object at 0x7f1f953f2d50>: Failed to establish a new connection: [Errno 101] Network unreachable'))
-2025-11-25 01:30:21.716 ERROR (MainThread) [engineio.client] packet queue is empty, aborting
-2025-11-25 01:30:38.447 ERROR (MainThread) [tibber.home] Error in rt_subscribe
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.13/site-packages/tibber/home.py", line 477, in _start
-    async for _data in self._tibber_control.realtime.sub_manager.session.subscribe(
-    ...<14 lines>...
-            return
-  File "/usr/local/lib/python3.13/site-packages/gql/client.py", line 1476, in subscribe
-    async for result in inner_generator:
-    ...<13 lines>...
-                yield result.data
-  File "/usr/local/lib/python3.13/site-packages/gql/client.py", line 1373, in _subscribe
-    async for result in inner_generator:
-    ...<11 lines>...
-        yield result
-  File "/usr/local/lib/python3.13/site-packages/gql/transport/websockets_base.py", line 388, in subscribe
-    answer_type, execution_result = await listener.get()
-                                    ^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.13/site-packages/gql/transport/websockets_base.py", line 56, in get
-    raise item
-gql.transport.exceptions.TransportServerError: No pong received after 15.0 seconds
-2025-11-25 01:30:39.780 ERROR (MainThread) [tibber.realtime] Watchdog: Connection is down, 2025-11-25 00:30:49.780572+00:00
-2025-11-25 01:30:41.513 ERROR (MainThread) [homeassistant] Error doing job: Future exception was never retrieved (None)
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.13/site-packages/urllib3/connectionpool.py", line 787, in urlopen
-    response = self._make_request(
-        conn,
-    ...<10 lines>...
-        **response_kw,
+  File "/usr/local/lib/python3.13/site-packages/aiohttp/web_protocol.py", line 510, in _handle_request
+    resp = await request_handler(request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/aiohttp/web_app.py", line 569, in _handle
+    return await handler(request)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.13/site-packages/aiohttp/web_middlewares.py", line 117, in impl
+    return await handler(request)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/src/homeassistant/homeassistant/components/http/security_filter.py", line 92, in security_filter_middleware
+    return await handler(request)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/src/homeassistant/homeassistant/components/http/forwarded.py", line 83, in forwarded_middleware
+    return await handler(request)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/src/homeassistant/homeassistant/components/http/request_context.py", line 26, in request_context_middleware
+    return await handler(request)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/src/homeassistant/homeassistant/components/http/ban.py", line 86, in ban_middleware
+    return await handler(request)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/src/homeassistant/homeassistant/components/http/auth.py", line 242, in auth_middleware
+    return await handler(request)
+           ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/src/homeassistant/homeassistant/components/http/headers.py", line 41, in headers_middleware
+    response = await handler(request)
+               ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/src/homeassistant/homeassistant/helpers/http.py", line 73, in handle
+    result = await handler(request, **request.match_info)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/src/homeassistant/homeassistant/components/http/decorators.py", line 83, in with_admin
+    return await func(self, request, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/src/homeassistant/homeassistant/components/config/config_entries.py", line 225, in post
+    return await super().post(request, flow_id)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/src/homeassistant/homeassistant/components/http/data_validator.py", line 74, in wrapper
+    return await method(view, request, data, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/src/homeassistant/homeassistant/helpers/data_entry_flow.py", line 121, in post
+    result = await self._flow_mgr.async_configure(flow_id, data)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/src/homeassistant/homeassistant/data_entry_flow.py", line 335, in async_configure
+    result = await self._async_configure(flow_id, user_input)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/src/homeassistant/homeassistant/data_entry_flow.py", line 382, in _async_configure
+    result = await self._async_handle_step(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        flow, cur_step["step_id"], user_input
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     )
-  File "/usr/local/lib/python3.13/site-packages/urllib3/connectionpool.py", line 534, in _make_request
-    response = conn.getresponse()
-  File "/usr/local/lib/python3.13/site-packages/urllib3/connection.py", line 565, in getresponse
-    httplib_response = super().getresponse()
-  File "/usr/local/lib/python3.13/http/client.py", line 1430, in getresponse
-    response.begin()
-    ~~~~~~~~~~~~~~^^
-  File "/usr/local/lib/python3.13/http/client.py", line 331, in begin
-    version, status, reason = self._read_status()
-                              ~~~~~~~~~~~~~~~~~^^
-  File "/usr/local/lib/python3.13/http/client.py", line 292, in _read_status
-    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
-               ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.13/socket.py", line 719, in readinto
-    return self._sock.recv_into(b)
-           ~~~~~~~~~~~~~~~~~~~~^^^
-ConnectionResetError: [Errno 104] Connection reset by peer
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.13/site-packages/requests/adapters.py", line 667, in send
-    resp = conn.urlopen(
-        method=request.method,
-    ...<9 lines>...
-        chunked=chunked,
-    )
-  File "/usr/local/lib/python3.13/site-packages/urllib3/connectionpool.py", line 841, in urlopen
-    retries = retries.increment(
-        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
-    )
-  File "/usr/local/lib/python3.13/site-packages/urllib3/util/retry.py", line 474, in increment
-    raise reraise(type(error), error, _stacktrace)
-          ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.13/site-packages/urllib3/util/util.py", line 38, in reraise
-    raise value.with_traceback(tb)
-  File "/usr/local/lib/python3.13/site-packages/urllib3/connectionpool.py", line 787, in urlopen
-    response = self._make_request(
-        conn,
-    ...<10 lines>...
-        **response_kw,
-    )
-  File "/usr/local/lib/python3.13/site-packages/urllib3/connectionpool.py", line 534, in _make_request
-    response = conn.getresponse()
-  File "/usr/local/lib/python3.13/site-packages/urllib3/connection.py", line 565, in getresponse
-    httplib_response = super().getresponse()
-  File "/usr/local/lib/python3.13/http/client.py", line 1430, in getresponse
-    response.begin()
-    ~~~~~~~~~~~~~~^^
-  File "/usr/local/lib/python3.13/http/client.py", line 331, in begin
-    version, status, reason = self._read_status()
-                              ~~~~~~~~~~~~~~~~~^^
-  File "/usr/local/lib/python3.13/http/client.py", line 292, in _read_status
-    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
-               ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.13/socket.py", line 719, in readinto
-    return self._sock.recv_into(b)
-           ~~~~~~~~~~~~~~~~~~~~^^^
-urllib3.exceptions.ProtocolError: ('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.13/concurrent/futures/thread.py", line 59, in run
-    result = self.fn(*self.args, **self.kwargs)
-  File "/usr/src/homeassistant/homeassistant/components/huawei_lte/__init__.py", line 427, in _update_router
-    router.update()
-    ~~~~~~~~~~~~~^^
-  File "/usr/src/homeassistant/homeassistant/components/huawei_lte/__init__.py", line 210, in update
-    self._get_data(KEY_DEVICE_INFORMATION, self.client.device.information)
-    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/src/homeassistant/homeassistant/components/huawei_lte/__init__.py", line 167, in _get_data
-    self.data[key] = func()
-                     ~~~~^^
-  File "/usr/local/lib/python3.13/site-packages/huawei_lte_api/api/Device.py", line 9, in information
-    return self._session.get('device/information')
-           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.13/site-packages/huawei_lte_api/Session.py", line 34, in wrapped
-    return fn(*args, **kw)
-  File "/usr/local/lib/python3.13/site-packages/huawei_lte_api/Session.py", line 301, in get
-    response = self.requests_session.get(
-        self._build_final_url(endpoint, prefix),
+    ^
+  File "/usr/src/homeassistant/homeassistant/data_entry_flow.py", line 486, in _async_handle_step
+    result: _FlowResultT = await getattr(flow, method)(user_input)
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/config/custom_components/nordpool_optimizer/config_flow.py", line 343, in async_step_reconfigure
+    return self.async_update_reload_and_abort(
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        config_entry,
+        ^^^^^^^^^^^^^
     ...<2 lines>...
-        timeout=self.timeout,
+        reason="reconfiguration_successful",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     )
-  File "/usr/local/lib/python3.13/site-packages/requests/sessions.py", line 602, in get
-    return self.request("GET", url, **kwargs)
-           ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.13/site-packages/requests/sessions.py", line 589, in request
-    resp = self.send(prep, **send_kwargs)
-  File "/usr/local/lib/python3.13/site-packages/requests/sessions.py", line 703, in send
-    r = adapter.send(request, **kwargs)
-  File "/usr/local/lib/python3.13/site-packages/requests/adapters.py", line 682, in send
-    raise ConnectionError(err, request=request)
-requests.exceptions.ConnectionError: ('Connection aborted.', ConnectionResetError(104, 'Connection reset by peer'))
-2025-11-25 01:30:44.744 ERROR (MainThread) [custom_components.tapo_control] HTTPSConnectionPool(host='192.168.8.111', port=443): Max retries exceeded with url: /stok=QwAl5kBA4QQ5w4h*4Q2jnTwcch72w7ne/ds (Caused by NewConnectionError('<urllib3.connection.HTTPSConnection object at 0x7f1f953f3390>: Failed to establish a new connection: [Errno 113] Host is unreachable'))
-2025-11-25 03:45:46.853 ERROR (Thread-6) [root] Uncaught thread exception
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.13/threading.py", line 1043, in _bootstrap_inner
-    self.run()
-    ~~~~~~~~^^
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/mq.py", line 118, in run
-    self.__run_mqtt()
-    ~~~~~~~~~~~~~~~^^
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/mq.py", line 131, in __run_mqtt
-    mq_config = self._get_mqtt_config()
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/mq.py", line 47, in _get_mqtt_config
-    response = self.api.post("/v1.0/m/life/ha/access/config", None,
-                             {"linkId": link_id})
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/customerapi.py", line 192, in post
-    return self.__request("POST", path, params, body)
-           ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/customerapi.py", line 121, in __request
-    raise Exception(f"network error:({ret['code']}) {ret['msg']}")
-Exception: network error:(-9999999) sign invalid
-2025-11-25 06:17:45.292 ERROR (MainThread) [habluetooth.scanner] hci0 (98:BA:5F:D0:58:CF): Error stopping scanner: [org.bluez.Error.InProgress] Operation already in progress
-2025-11-25 06:19:45.296 ERROR (MainThread) [habluetooth.scanner] hci0 (98:BA:5F:D0:58:CF): Error stopping scanner: [org.bluez.Error.InProgress] Operation already in progress
-2025-11-25 07:22:45.422 ERROR (MainThread) [habluetooth.scanner] hci0 (98:BA:5F:D0:58:CF): Error stopping scanner: [org.bluez.Error.InProgress] Operation already in progress
-2025-11-25 07:24:45.426 ERROR (MainThread) [habluetooth.scanner] hci0 (98:BA:5F:D0:58:CF): Error stopping scanner: [org.bluez.Error.InProgress] Operation already in progress
-2025-11-25 07:45:58.625 ERROR (Thread-7) [root] Uncaught thread exception
-Traceback (most recent call last):
-  File "/usr/local/lib/python3.13/threading.py", line 1043, in _bootstrap_inner
-    self.run()
-    ~~~~~~~~^^
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/mq.py", line 118, in run
-    self.__run_mqtt()
-    ~~~~~~~~~~~~~~~^^
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/mq.py", line 131, in __run_mqtt
-    mq_config = self._get_mqtt_config()
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/mq.py", line 47, in _get_mqtt_config
-    response = self.api.post("/v1.0/m/life/ha/access/config", None,
-                             {"linkId": link_id})
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/customerapi.py", line 192, in post
-    return self.__request("POST", path, params, body)
-           ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.13/site-packages/tuya_sharing/customerapi.py", line 121, in __request
-    raise Exception(f"network error:({ret['code']}) {ret['msg']}")
-Exception: network error:(-9999999) sign invalid
-2025-11-25 08:23:04.545 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 08:23:34.567 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 08:24:04.625 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 08:24:34.656 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 08:25:04.662 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 08:25:34.668 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 08:26:04.730 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 08:26:34.799 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 08:27:04.876 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 08:27:34.882 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 08:28:04.934 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 08:28:35.002 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 08:29:05.048 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 08:29:35.082 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
-2025-11-25 08:30:05.097 WARNING (MainThread) [custom_components.nordpool_optimizer] An output listener with key "graph_nordpool_optimizer_price_graph" is overriding previous entity "sensor.nordpool_price_graph"
+    ^
+TypeError: ConfigFlow.async_update_reload_and_abort() got an unexpected keyword argument 'description_placeholders'

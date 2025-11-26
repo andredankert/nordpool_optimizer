@@ -338,8 +338,9 @@ class NordpoolOptimizerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None):
         """Handle reconfiguration of the config entry."""
         if user_input is not None:
+            config_entry = self._get_reconfigure_entry()
             return self.async_update_reload_and_abort(
-                self._get_reconfigure_entry(),
+                config_entry,
                 data_updates=user_input,
             )
 

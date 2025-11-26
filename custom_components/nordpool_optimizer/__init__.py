@@ -86,28 +86,49 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
 
     await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
     
-    # Trigger update after entities are set up so they receive the initial state
-    # Use a callback to ensure it runs after entities are fully registered
+    # Trigger update immediately after entities are set up
+    # This ensures entities have data right away instead of showing unavailable
     if config_entry.entry_id in hass.data[DOMAIN]:
         optimizer = hass.data[DOMAIN][config_entry.entry_id]
         
-        async def _trigger_update_after_setup():
-            """Trigger update after a short delay to ensure entities are registered."""
+        async def _trigger_update_immediately():
+            """Trigger update immediately to ensure entities have data."""
             try:
-                # Small delay to ensure all entities have completed async_added_to_hass
-                # Use asyncio.sleep instead of executor to properly yield
+                # Very short delay just to let entities finish async_added_to_hass
                 import asyncio
-                await asyncio.sleep(0.1)  # 100ms delay
+                await asyncio.sleep(0.1)
                 
-                _LOGGER.debug("Triggering update after reconfiguration for %s", optimizer.device_name)
-                # Run update in executor but ensure errors are caught
+                # Check if optimizer still exists
+                if config_entry.entry_id not in hass.data.get(DOMAIN, {}):
+                    return
+                
+                optimizer = hass.data[DOMAIN][config_entry.entry_id]
+                _LOGGER.info("Triggering immediate update for %s", optimizer.device_name)
+                
+                # Run update in executor
                 await hass.async_add_executor_job(optimizer.update, True)
-                _LOGGER.debug("Successfully triggered update after reconfiguration for %s", optimizer.device_name)
+                
+                # Immediately notify all registered entities
+                _LOGGER.info("Notifying %d entities after update for %s", len(optimizer._output_listeners), optimizer.device_name)
+                for listener in list(optimizer._output_listeners.values()):
+                    try:
+                        listener.schedule_update_ha_state()
+                    except Exception as e:
+                        _LOGGER.warning("Failed to notify entity: %s", e)
+                
             except Exception as e:
-                _LOGGER.error("Failed to update optimizer after reconfiguration for %s: %s", optimizer.device_name, e, exc_info=True)
+                _LOGGER.error("Failed to update optimizer: %s", e, exc_info=True)
+                # Notify entities even on error
+                try:
+                    if config_entry.entry_id in hass.data.get(DOMAIN, {}):
+                        optimizer = hass.data[DOMAIN][config_entry.entry_id]
+                        for listener in list(optimizer._output_listeners.values()):
+                            listener.schedule_update_ha_state()
+                except Exception:
+                    pass
         
-        # Schedule the update callback
-        hass.async_create_task(_trigger_update_after_setup())
+        # Schedule immediately (don't wait)
+        hass.async_create_task(_trigger_update_immediately())
     
     return True
 
@@ -116,17 +137,36 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unloading a config_flow entry."""
     _LOGGER.debug("Unloading optimizer entry: %s", entry.entry_id)
     
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok:
-        # Get and cleanup optimizer if it exists
-        if DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]:
-            optimizer = hass.data[DOMAIN].pop(entry.entry_id)
-            optimizer.cleanup()
-            _LOGGER.debug("Cleaned up optimizer for entry: %s", entry.entry_id)
-        else:
-            _LOGGER.debug("No optimizer found for entry: %s", entry.entry_id)
+    from homeassistant.config_entries import ConfigEntryState
     
-    return unload_ok
+    # Clean up optimizer first (before unloading platforms)
+    if DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]:
+        optimizer = hass.data[DOMAIN].pop(entry.entry_id)
+        optimizer.cleanup()
+        _LOGGER.debug("Cleaned up optimizer for entry: %s", entry.entry_id)
+    
+    # Only try to unload platforms if entry is actually loaded
+    # If entry was never loaded or is in a bad state, skip platform unload
+    if entry.state != ConfigEntryState.LOADED:
+        _LOGGER.debug("Entry %s is in state %s, skipping platform unload", entry.entry_id, entry.state)
+        return True  # Return True since we cleaned up the optimizer
+    
+    # Try to unload platforms, but don't fail if it errors
+    try:
+        unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        if not unload_ok:
+            _LOGGER.warning("Failed to unload platforms for entry %s, but continuing", entry.entry_id)
+        return unload_ok
+    except ValueError as e:
+        # "Config entry was never loaded!" - this is OK, just means platforms weren't set up
+        if "never loaded" in str(e).lower():
+            _LOGGER.debug("Platforms were never loaded for entry %s, this is OK", entry.entry_id)
+            return True
+        _LOGGER.warning("Error unloading platforms for entry %s: %s", entry.entry_id, e)
+        return False
+    except Exception as e:
+        _LOGGER.warning("Error unloading platforms for entry %s: %s", entry.entry_id, e)
+        return False
 
 
 async def async_reload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
@@ -134,17 +174,31 @@ async def async_reload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> 
     _LOGGER.info("Reloading optimizer entry: %s (device: %s)", 
                  config_entry.entry_id, config_entry.data.get(CONF_DEVICE_NAME, 'unknown'))
     
-    # Completely unload and remove old optimizer
-    await async_unload_entry(hass, config_entry)
+    from homeassistant.config_entries import ConfigEntryState
     
-    # Small delay to ensure cleanup completes and entities are fully removed
+    # Clean up optimizer first (always do this)
+    if DOMAIN in hass.data and config_entry.entry_id in hass.data[DOMAIN]:
+        optimizer = hass.data[DOMAIN].pop(config_entry.entry_id)
+        optimizer.cleanup()
+        _LOGGER.debug("Cleaned up optimizer for entry: %s", config_entry.entry_id)
+    
+    # Note: async_update_reload_and_abort calls async_unload_entry internally
+    # Our async_unload_entry now handles the "never loaded" case gracefully
+    # So we don't need to do anything special here - just set up fresh
+    
+    # Small delay to ensure cleanup completes
     import asyncio
     await asyncio.sleep(0.2)
     
     # Now set up fresh - this will create a completely new optimizer instance
-    await async_setup_entry(hass, config_entry)
-    
-    _LOGGER.info("Reload completed for optimizer entry: %s", config_entry.entry_id)
+    # async_setup_entry will handle creating the optimizer and setting up platforms
+    try:
+        await async_setup_entry(hass, config_entry)
+        _LOGGER.info("Reload completed successfully for optimizer entry: %s", config_entry.entry_id)
+    except Exception as e:
+        _LOGGER.error("Failed to set up entry after reload: %s", e, exc_info=True)
+        # Re-raise to let Home Assistant handle it
+        raise
 
 
 
@@ -276,7 +330,12 @@ class NordpoolOptimizer:
             # Run initial optimization with cached data (don't fetch new data)
             self.update(force_price_update=False)
         else:
-            _LOGGER.debug("No valid cache found for %s, will wait for first price update", self.device_name)
+            _LOGGER.debug("No valid cache found for %s, fetching price data immediately", self.device_name)
+            # Try to fetch price data immediately so entities have data
+            try:
+                self.update(force_price_update=True)
+            except Exception as e:
+                _LOGGER.warning("Failed to fetch initial price data for %s: %s", self.device_name, e)
 
         if periods_cache_loaded:
             _LOGGER.debug("Loaded persistent periods cache for %s", self.device_name)

@@ -208,6 +208,9 @@ class NordpoolOptimizerTimerEntity(NordpoolOptimizerEntity, SensorEntity):
     @property
     def native_value(self) -> int | None:
         """Return the numeric state in minutes."""
+        # Check if optimizer is cleaned up or not initialized
+        if not self._optimizer or not hasattr(self._optimizer, 'is_valid'):
+            return None
         if not self._optimizer.is_valid:
             return None
 
@@ -238,6 +241,10 @@ class NordpoolOptimizerTimerEntity(NordpoolOptimizerEntity, SensorEntity):
     @property
     def state(self) -> str:
         """Return formatted timer display."""
+        # Check if optimizer exists and is initialized
+        if not self._optimizer or not hasattr(self._optimizer, 'is_valid'):
+            return STATE_UNAVAILABLE
+            
         value = self.native_value
         if value is None:
             return STATE_UNAVAILABLE
@@ -314,6 +321,15 @@ class NordpoolOptimizerTimerEntity(NordpoolOptimizerEntity, SensorEntity):
         """Register with optimizer for updates."""
         await super().async_added_to_hass()
         self._optimizer.register_output_listener_entity(self, "timer")
+        # If optimizer already has valid data, trigger immediate update
+        # Otherwise schedule update which will happen after optimizer updates
+        if self._optimizer.is_valid:
+            # Optimizer already has data, update immediately
+            self.schedule_update_ha_state()
+        else:
+            # Optimizer doesn't have data yet, will update when it gets data
+            # But still schedule an update to show current state (unavailable)
+            self.schedule_update_ha_state()
 
 
 class NordpoolOptimizerPriceGraphEntity(SensorEntity):
@@ -334,15 +350,19 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
     def native_value(self) -> float | None:
         """Return current price as sensor state."""
         # Get current price from any available optimizer
-        optimizers = self._get_all_optimizers()
-        if not optimizers:
-            return None
+        try:
+            optimizers = self._get_all_optimizers()
+            if not optimizers:
+                return None
 
-        for optimizer in optimizers:
-            if optimizer._prices_entity.valid:
-                current_price = optimizer._prices_entity.current_price_attr
-                if current_price is not None:
-                    return current_price
+            for optimizer in optimizers:
+                if hasattr(optimizer, '_prices_entity') and optimizer._prices_entity.valid:
+                    current_price = optimizer._prices_entity.current_price_attr
+                    if current_price is not None:
+                        return current_price
+        except Exception:
+            # If there's an error getting optimizers, return None (will show unavailable)
+            return None
 
         return None
 
@@ -363,10 +383,13 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
     @property
     def state(self) -> str | None:
         """Return formatted current price."""
-        value = self.native_value
-        if value is None:
+        try:
+            value = self.native_value
+            if value is None:
+                return STATE_UNAVAILABLE
+            return f"{value:.3f}"
+        except Exception:
             return STATE_UNAVAILABLE
-        return f"{value:.3f}"
 
     @property
     def extra_state_attributes(self) -> dict:
@@ -650,6 +673,9 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         self._minutely_update = async_track_time_change(
             self.hass, self.minutely_time_update, second=0
         )
+        
+        # Schedule immediate update to ensure entity shows current state
+        self.schedule_update_ha_state()
 
     async def async_will_remove_from_hass(self) -> None:
         """Cleanup when entity is removed."""
