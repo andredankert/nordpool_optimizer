@@ -696,18 +696,27 @@ class NordpoolOptimizer:
         return periods
 
     def _find_consecutive_daily_period(self, day_start: dt.datetime, day_end: dt.datetime) -> OptimalPeriod | None:
-        """Find the cheapest consecutive period in a day using 15-minute granularity."""
+        """Find the cheapest consecutive period using hour-aligned boundaries.
+
+        Prices are hourly, so 15-minute offsets just create phantom-equivalent
+        windows that share the same price set but silently ignore partial-hour
+        costs.  Iterating by 1 hour ensures each window maps to a unique set of
+        hourly prices and the average is accurate.
+        """
         best_period = None
         best_price = float('inf')
 
-        # Try each possible starting 15-minute slot
-        current_slot = day_start
+        # Round up to next hour boundary
+        current_slot = day_start.replace(minute=0, second=0, microsecond=0)
+        if current_slot < day_start:
+            current_slot += dt.timedelta(hours=1)
+
         duration_timedelta = dt.timedelta(hours=self.duration)
 
         while current_slot + duration_timedelta <= day_end:
             # Check if this slot is within time window (if enabled)
             if self.time_window_enabled and not self._is_in_time_window(current_slot):
-                current_slot += dt.timedelta(minutes=15)
+                current_slot += dt.timedelta(hours=1)
                 continue
 
             period_end = current_slot + duration_timedelta
@@ -723,7 +732,7 @@ class NordpoolOptimizer:
                 _LOGGER.debug("New best consecutive period for %s: %s-%s, avg price: %.3f",
                              self.device_name, current_slot.strftime('%H:%M'), period_end.strftime('%H:%M'), best_price)
 
-            current_slot += dt.timedelta(minutes=15)
+            current_slot += dt.timedelta(hours=1)
 
         if best_period:
             _LOGGER.debug("Final best consecutive period for %s: %s-%s, avg price: %.3f",
