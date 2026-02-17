@@ -665,6 +665,16 @@ class NordpoolOptimizer:
         data_end = self._prices_entity.data_end
         search_end = min(now + dt.timedelta(hours=48), data_end) if data_end else now + dt.timedelta(hours=48)
 
+        _LOGGER.info(
+            "[%s] daily_consecutive: duration=%sh, gap=%sh, interval=%dmin, "
+            "entries_per_hour=%d, data_end=%s, search_end=%s, price_count=%d",
+            self.device_name, self.duration, min_gap.total_seconds() / 3600,
+            interval_minutes, self._prices_entity.entries_per_hour,
+            data_end.strftime('%Y-%m-%d %H:%M') if data_end else 'None',
+            search_end.strftime('%Y-%m-%d %H:%M'),
+            len(self._prices_entity._all_prices),
+        )
+
         # Respect spacing from recently completed slots:
         # At this point self._persistent_periods only contains completed past
         # periods (cleared by update() before calling _calculate_all_periods).
@@ -673,14 +683,21 @@ class NordpoolOptimizer:
             spacing_boundary = last_end + min_gap
             if spacing_boundary > earliest:
                 earliest = spacing_boundary
-                _LOGGER.debug(
-                    "Spacing from last completed slot pushes earliest start to %s for %s",
-                    earliest.strftime('%Y-%m-%d %H:%M'), self.device_name)
+                _LOGGER.info(
+                    "[%s] Spacing from last completed slot pushes earliest to %s",
+                    self.device_name, earliest.strftime('%Y-%m-%d %H:%M'))
 
         while earliest + duration_td <= search_end:
             period = self._find_consecutive_daily_period(earliest, search_end)
             if not period:
                 break
+            _LOGGER.info(
+                "[%s] Selected slot: %s - %s, avg price: %.4f",
+                self.device_name,
+                period.start_time.strftime('%Y-%m-%d %H:%M'),
+                period.end_time.strftime('%Y-%m-%d %H:%M'),
+                period.average_price,
+            )
             periods.append(period)
             earliest = period.end_time + min_gap
 
@@ -702,6 +719,7 @@ class NordpoolOptimizer:
         """Find the cheapest consecutive period matching price data resolution."""
         best_period = None
         best_price = float('inf')
+        candidates = []  # collect top candidates for logging
 
         step = self._prices_entity.price_interval
         expected_count = self.duration * self._prices_entity.entries_per_hour
@@ -716,32 +734,54 @@ class NordpoolOptimizer:
             current_slot = day_start
 
         duration_timedelta = dt.timedelta(hours=self.duration)
+        evaluated = 0
+        skipped_count = 0
+        skipped_window = 0
 
         while current_slot + duration_timedelta <= day_end:
             # Check if this slot is within time window (if enabled)
             if self.time_window_enabled and not self._is_in_time_window(current_slot):
                 current_slot += step
+                skipped_window += 1
                 continue
 
             period_end = current_slot + duration_timedelta
             price_group = self._prices_entity.get_prices_group(current_slot, period_end)
+            evaluated += 1
 
-            if price_group.valid and price_group.count >= expected_count and price_group.average < best_price:
-                best_price = price_group.average
+            if not price_group.valid or price_group.count < expected_count:
+                skipped_count += 1
+                current_slot += step
+                continue
+
+            avg = price_group.average
+            candidates.append((current_slot, period_end, avg, price_group.count))
+
+            if avg < best_price:
+                best_price = avg
                 best_period = OptimalPeriod(
                     start_time=current_slot,
                     end_time=period_end,
-                    average_price=price_group.average
+                    average_price=avg,
                 )
-                _LOGGER.debug("New best consecutive period for %s: %s-%s, avg price: %.3f",
-                             self.device_name, current_slot.strftime('%H:%M'), period_end.strftime('%H:%M'), best_price)
 
             current_slot += step
 
-        if best_period:
-            _LOGGER.debug("Final best consecutive period for %s: %s-%s, avg price: %.3f",
-                         self.device_name, best_period.start_time.strftime('%H:%M'),
-                         best_period.end_time.strftime('%H:%M'), best_period.average_price)
+        # Log top 5 cheapest candidates
+        candidates.sort(key=lambda c: c[2])
+        top = candidates[:5]
+        _LOGGER.info(
+            "[%s] Search %s→%s: evaluated=%d, valid=%d, skipped_count=%d, skipped_window=%d, expected_count=%d",
+            self.device_name,
+            day_start.strftime('%m-%d %H:%M'), day_end.strftime('%m-%d %H:%M'),
+            evaluated, len(candidates), skipped_count, skipped_window, expected_count,
+        )
+        for i, (s, e, avg, cnt) in enumerate(top):
+            _LOGGER.info(
+                "[%s]   #%d  %s - %s  avg=%.4f  count=%d",
+                self.device_name, i + 1,
+                s.strftime('%m-%d %H:%M'), e.strftime('%m-%d %H:%M'), avg, cnt,
+            )
 
         return best_period
 
@@ -1177,10 +1217,10 @@ class PricesEntity:
         base_prices = []
 
         if np_prices := self._np.attributes.get("raw_today"):
-            # For Nordpool format
+            # For Nordpool format – copy to avoid mutating the original list
+            base_prices = list(np_prices)
             if self._np.attributes["tomorrow_valid"]:
-                np_prices += self._np.attributes["raw_tomorrow"]
-            base_prices = np_prices
+                base_prices += self._np.attributes["raw_tomorrow"]
         elif e_prices := self._np.attributes.get("prices"):  # noqa: RET505
             # For ENTSO-e format
             base_prices = [
