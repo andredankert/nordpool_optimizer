@@ -346,12 +346,16 @@ class NordpoolOptimizer:
         # Try to load cached price data first for immediate availability
         cache_loaded = self._prices_entity.load_cache()
 
-        # For new optimizer instances (like during reload), start with fresh periods
-        # Don't load period cache - it might have periods calculated with old config
-        # The periods will be recalculated with new config during update()
-        _LOGGER.debug("Starting fresh for %s - periods will be recalculated with current config", self.device_name)
-        self._persistent_periods = []
-        periods_cache_loaded = False
+        # Load period cache to preserve completed past periods (needed for spacing).
+        # Future planned periods will be cleared and recalculated by update().
+        periods_cache_loaded = self.load_period_cache()
+        if periods_cache_loaded:
+            now = dt_util.now()
+            self._persistent_periods = [
+                p for p in self._persistent_periods
+                if p.status == "completed" and p.end_time < now
+            ]
+            _LOGGER.debug("Loaded %d completed past periods for %s", len(self._persistent_periods), self.device_name)
 
         if cache_loaded:
             _LOGGER.debug("Loaded cached price data for %s, running initial optimization", self.device_name)
@@ -623,7 +627,7 @@ class NordpoolOptimizer:
             period_end = current_slot + duration_timedelta
             price_group = self._prices_entity.get_prices_group(current_slot, period_end)
 
-            if price_group.valid and price_group.average <= self.price_threshold:
+            if price_group.valid and price_group.count >= self.duration and price_group.average <= self.price_threshold:
                 periods.append(OptimalPeriod(
                     start_time=current_slot,
                     end_time=period_end,
@@ -708,7 +712,7 @@ class NordpoolOptimizer:
             period_end = current_slot + duration_timedelta
             price_group = self._prices_entity.get_prices_group(current_slot, period_end)
 
-            if price_group.valid and price_group.average < best_price:
+            if price_group.valid and price_group.count >= self.duration and price_group.average < best_price:
                 best_price = price_group.average
                 best_period = OptimalPeriod(
                     start_time=current_slot,
@@ -1323,6 +1327,11 @@ class NordpoolPricesGroup:
     def __repr__(self) -> str:
         """Get string representation for debugging."""
         return type(self).__name__ + f" ({self.__str__()})"
+
+    @property
+    def count(self) -> int:
+        """Number of price data points in the group."""
+        return len(self._prices)
 
     @property
     def valid(self) -> bool:
