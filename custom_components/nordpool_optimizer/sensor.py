@@ -137,16 +137,24 @@ async def async_setup_entry(
         optimizer: NordpoolOptimizer = hass.data[DOMAIN][config_entry.entry_id]
         entities = []
 
-        # Always create timer entity for this device
-        entities.append(
-            NordpoolOptimizerTimerEntity(
-                optimizer,
-                entity_description=SensorEntityDescription(
-                    key="timer",
-                    # Remove device class to allow custom formatting
-                ),
+        # Check if timer entity already exists - if so, skip creating it
+        # This can happen during reload if entities weren't properly removed
+        timer_entity_id = f"sensor.nordpool_optimizer_{optimizer.device_name}".lower().replace(" ", "_").replace(".", "")
+        existing_entity_ids = hass.states.async_entity_ids("sensor")
+        
+        if timer_entity_id not in existing_entity_ids:
+            # Always create timer entity for this device
+            entities.append(
+                NordpoolOptimizerTimerEntity(
+                    optimizer,
+                    entity_description=SensorEntityDescription(
+                        key="timer",
+                        # Remove device class to allow custom formatting
+                    ),
+                )
             )
-        )
+        else:
+            _LOGGER.debug("Timer entity %s already exists, skipping creation", timer_entity_id)
 
         # Create price graph entity only once (for the first optimizer setup)
         # Check if price graph entity already exists
@@ -184,6 +192,24 @@ async def async_setup_entry(
         _LOGGER.exception("Failed to setup entities for %s: %s", setup_key, e)
         _finish_setup(setup_key, success=False)
         return False
+
+
+async def async_unload_entry(
+    hass: HomeAssistant, config_entry: ConfigEntry
+) -> bool:
+    """Unload entities when config entry is unloaded."""
+    setup_key = _get_setup_key(config_entry)
+    _LOGGER.debug("Unloading sensor entities for entry: %s", setup_key)
+    
+    # Clean up setup locks
+    _setup_in_progress.discard(setup_key)
+    _setup_retry_counts.pop(setup_key, None)
+    _setup_last_attempt.pop(setup_key, None)
+    _setup_locks_created.pop(setup_key, None)
+    
+    # Entities will be removed automatically by Home Assistant
+    # We just need to clean up our tracking state
+    return True
 
 
 class NordpoolOptimizerTimerEntity(NordpoolOptimizerEntity, SensorEntity):

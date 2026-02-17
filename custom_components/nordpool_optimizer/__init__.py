@@ -84,6 +84,30 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
             )
             return False
 
+    # Before setting up platforms, ensure any existing entities are removed
+    # This prevents "already been setup" errors during reload
+    from homeassistant.helpers import entity_registry as er
+    entity_registry = er.async_get(hass)
+    
+    # Find and remove any existing entities for this config entry
+    existing_entities = [
+        entity_id for entity_id, entity in entity_registry.entities.items()
+        if entity.config_entry_id == config_entry.entry_id
+    ]
+    if existing_entities:
+        _LOGGER.debug("Removing %d existing entities for entry %s before setup", 
+                     len(existing_entities), config_entry.entry_id)
+        for entity_id in existing_entities:
+            try:
+                entity_registry.async_remove(entity_id)
+            except Exception as e:
+                _LOGGER.debug("Failed to remove entity %s: %s", entity_id, e)
+    
+    # Small delay to ensure entity removal completes
+    import asyncio
+    await asyncio.sleep(0.1)
+    
+    # Now set up platforms
     await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
     
     # Trigger update immediately after entities are set up
@@ -322,8 +346,12 @@ class NordpoolOptimizer:
         # Try to load cached price data first for immediate availability
         cache_loaded = self._prices_entity.load_cache()
 
-        # Load persistent periods cache
-        periods_cache_loaded = self.load_period_cache()
+        # For new optimizer instances (like during reload), start with fresh periods
+        # Don't load period cache - it might have periods calculated with old config
+        # The periods will be recalculated with new config during update()
+        _LOGGER.debug("Starting fresh for %s - periods will be recalculated with current config", self.device_name)
+        self._persistent_periods = []
+        periods_cache_loaded = False
 
         if cache_loaded:
             _LOGGER.debug("Loaded cached price data for %s, running initial optimization", self.device_name)
@@ -350,6 +378,13 @@ class NordpoolOptimizer:
         # Update display every minute for live countdown
         self._minutely_update = async_track_time_change(
             self._hass, self.minutely_display_update, second=0
+        )
+
+        # Recalculate immediately when tomorrow's prices become available
+        self._state_change_listeners.append(
+            async_track_state_change_event(
+                self._hass, [self._prices_entity.unique_id], self._on_price_entity_change
+            )
         )
 
     @property
@@ -431,6 +466,18 @@ class NordpoolOptimizer:
         for listener in self._output_listeners.values():
             listener.update_callback()
 
+    async def _on_price_entity_change(self, event):
+        """Recalculate when tomorrow's prices become available."""
+        new_state = event.data.get("new_state")
+        old_state = event.data.get("old_state")
+        if not new_state or not old_state:
+            return
+        new_valid = new_state.attributes.get("tomorrow_valid", False)
+        old_valid = old_state.attributes.get("tomorrow_valid", False)
+        if new_valid and not old_valid:
+            _LOGGER.info("Tomorrow prices now available for %s, recalculating", self.device_name)
+            await self._hass.async_add_executor_job(self.update, True)
+
     def update(self, force_price_update: bool = True):
         """Optimizer update call function."""
         # Prevent updates after cleanup
@@ -487,8 +534,20 @@ class NordpoolOptimizer:
             if self._check_configuration_changed():
                 self._handle_configuration_change(now)
 
-            # Clear future planned periods before recalculation
+            # Clear ALL future periods before recalculation (not just planned ones)
+            # This ensures we recalculate with current configuration
+            initial_period_count = len(self._persistent_periods)
             self._clear_future_periods(now)
+            # Also clear any active/planned periods that might conflict with new config
+            # Keep only completed periods that are fully in the past
+            self._persistent_periods = [
+                period for period in self._persistent_periods
+                if period.status == "completed" and period.end_time < now
+            ]
+            cleared_count = initial_period_count - len(self._persistent_periods)
+            if cleared_count > 0:
+                _LOGGER.debug("Cleared %d periods total (including active/planned) for %s before recalculation",
+                             cleared_count, self.device_name)
 
             # Calculate ALL optimal periods from now until end of available data
             new_periods = self._calculate_all_periods(now)
@@ -577,24 +636,58 @@ class NordpoolOptimizer:
 
     def _calculate_daily_periods(self, now: dt.datetime) -> list[OptimalPeriod]:
         """Calculate optimal periods for daily mode."""
+        if self.slot_type == CONF_SLOT_TYPE_CONSECUTIVE:
+            return self._calculate_daily_consecutive(now)
+        else:
+            return self._calculate_daily_separate(now)
+
+    def _calculate_daily_consecutive(self, now: dt.datetime) -> list[OptimalPeriod]:
+        """Find cheapest consecutive slots across full price range with min spacing.
+
+        Searches the entire available price window (up to 48h) instead of per
+        calendar day, so slots can cross midnight (e.g. 22:00-02:00).  A minimum
+        gap between slots prevents back-to-back runs.
+        """
         periods = []
+        duration_td = dt.timedelta(hours=self.duration)
+        min_gap = dt.timedelta(hours=max(0, 24 - self.duration - 7))
 
-        # Calculate for today and tomorrow
+        minutes = now.minute
+        rounded_minutes = (minutes // 15) * 15
+        earliest = now.replace(minute=rounded_minutes, second=0, microsecond=0)
+        search_end = now + dt.timedelta(hours=48)
+
+        # Respect spacing from recently completed slots:
+        # At this point self._persistent_periods only contains completed past
+        # periods (cleared by update() before calling _calculate_all_periods).
+        if self._persistent_periods:
+            last_end = max(p.end_time for p in self._persistent_periods)
+            spacing_boundary = last_end + min_gap
+            if spacing_boundary > earliest:
+                earliest = spacing_boundary
+                _LOGGER.debug(
+                    "Spacing from last completed slot pushes earliest start to %s for %s",
+                    earliest.strftime('%Y-%m-%d %H:%M'), self.device_name)
+
+        while earliest + duration_td <= search_end:
+            period = self._find_consecutive_daily_period(earliest, search_end)
+            if not period:
+                break
+            periods.append(period)
+            earliest = period.end_time + min_gap
+
+        return periods
+
+    def _calculate_daily_separate(self, now: dt.datetime) -> list[OptimalPeriod]:
+        """Calculate separate daily periods (per calendar day)."""
+        periods = []
         for day_offset in [0, 1]:
-            day_start = (now + dt.timedelta(days=day_offset)).replace(hour=0, minute=0, second=0, microsecond=0)
+            day_start = (now + dt.timedelta(days=day_offset)).replace(
+                hour=0, minute=0, second=0, microsecond=0)
             day_end = day_start + dt.timedelta(days=1)
-
-            if self.slot_type == CONF_SLOT_TYPE_CONSECUTIVE:
-                period = self._find_consecutive_daily_period(day_start, day_end)
-            else:
-                period = self._find_separate_daily_periods(day_start, day_end)
-
-            if period:
-                if isinstance(period, list):
-                    periods.extend(period)
-                else:
-                    periods.append(period)
-
+            result = self._find_separate_daily_periods(day_start, day_end)
+            if result:
+                periods.extend(result)
         return periods
 
     def _find_consecutive_daily_period(self, day_start: dt.datetime, day_end: dt.datetime) -> OptimalPeriod | None:
