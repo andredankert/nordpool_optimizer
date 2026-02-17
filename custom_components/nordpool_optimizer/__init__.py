@@ -608,10 +608,12 @@ class NordpoolOptimizer:
         data_end = self._prices_entity.data_end
         end_time = min(now + dt.timedelta(hours=48), data_end) if data_end else now + dt.timedelta(hours=48)
 
-        # Check each 15-minute slot to see if it meets the threshold
-        # Round current time to nearest 15-minute boundary
-        minutes = now.minute
-        rounded_minutes = (minutes // 15) * 15
+        step = self._prices_entity.price_interval
+        expected_count = self.duration * self._prices_entity.entries_per_hour
+
+        # Round current time down to nearest price interval boundary
+        interval_minutes = max(1, int(step.total_seconds() / 60))
+        rounded_minutes = (now.minute // interval_minutes) * interval_minutes
         current_slot = now.replace(minute=rounded_minutes, second=0, microsecond=0)
 
         duration_timedelta = dt.timedelta(hours=self.duration)
@@ -619,21 +621,21 @@ class NordpoolOptimizer:
         while current_slot < end_time:
             # Check if this slot is within time window (if enabled)
             if self.time_window_enabled and not self._is_in_time_window(current_slot):
-                current_slot += dt.timedelta(minutes=15)
+                current_slot += step
                 continue
 
             # Get price group for the duration starting at this slot
             period_end = current_slot + duration_timedelta
             price_group = self._prices_entity.get_prices_group(current_slot, period_end)
 
-            if price_group.valid and price_group.count >= self.duration and price_group.average <= self.price_threshold:
+            if price_group.valid and price_group.count >= expected_count and price_group.average <= self.price_threshold:
                 periods.append(OptimalPeriod(
                     start_time=current_slot,
                     end_time=period_end,
                     average_price=price_group.average
                 ))
 
-            current_slot += dt.timedelta(minutes=15)
+            current_slot += step
 
         return periods
 
@@ -655,8 +657,9 @@ class NordpoolOptimizer:
         duration_td = dt.timedelta(hours=self.duration)
         min_gap = dt.timedelta(hours=max(0, 24 - self.duration - 7))
 
-        minutes = now.minute
-        rounded_minutes = (minutes // 15) * 15
+        step = self._prices_entity.price_interval
+        interval_minutes = max(1, int(step.total_seconds() / 60))
+        rounded_minutes = (now.minute // interval_minutes) * interval_minutes
         earliest = now.replace(minute=rounded_minutes, second=0, microsecond=0)
         # Cap at actual data availability to avoid phantom slots at the edge
         data_end = self._prices_entity.data_end
@@ -696,33 +699,34 @@ class NordpoolOptimizer:
         return periods
 
     def _find_consecutive_daily_period(self, day_start: dt.datetime, day_end: dt.datetime) -> OptimalPeriod | None:
-        """Find the cheapest consecutive period using hour-aligned boundaries.
-
-        Prices are hourly, so 15-minute offsets just create phantom-equivalent
-        windows that share the same price set but silently ignore partial-hour
-        costs.  Iterating by 1 hour ensures each window maps to a unique set of
-        hourly prices and the average is accurate.
-        """
+        """Find the cheapest consecutive period matching price data resolution."""
         best_period = None
         best_price = float('inf')
 
-        # Round up to next hour boundary
-        current_slot = day_start.replace(minute=0, second=0, microsecond=0)
-        if current_slot < day_start:
-            current_slot += dt.timedelta(hours=1)
+        step = self._prices_entity.price_interval
+        expected_count = self.duration * self._prices_entity.entries_per_hour
+
+        # Align start to price interval boundary
+        interval_seconds = int(step.total_seconds())
+        start_ts = int(day_start.timestamp())
+        remainder = start_ts % interval_seconds
+        if remainder:
+            current_slot = day_start + dt.timedelta(seconds=interval_seconds - remainder)
+        else:
+            current_slot = day_start
 
         duration_timedelta = dt.timedelta(hours=self.duration)
 
         while current_slot + duration_timedelta <= day_end:
             # Check if this slot is within time window (if enabled)
             if self.time_window_enabled and not self._is_in_time_window(current_slot):
-                current_slot += dt.timedelta(hours=1)
+                current_slot += step
                 continue
 
             period_end = current_slot + duration_timedelta
             price_group = self._prices_entity.get_prices_group(current_slot, period_end)
 
-            if price_group.valid and price_group.count >= self.duration and price_group.average < best_price:
+            if price_group.valid and price_group.count >= expected_count and price_group.average < best_price:
                 best_price = price_group.average
                 best_period = OptimalPeriod(
                     start_time=current_slot,
@@ -732,7 +736,7 @@ class NordpoolOptimizer:
                 _LOGGER.debug("New best consecutive period for %s: %s-%s, avg price: %.3f",
                              self.device_name, current_slot.strftime('%H:%M'), period_end.strftime('%H:%M'), best_price)
 
-            current_slot += dt.timedelta(hours=1)
+            current_slot += step
 
         if best_period:
             _LOGGER.debug("Final best consecutive period for %s: %s-%s, avg price: %.3f",
@@ -1147,11 +1151,25 @@ class PricesEntity:
         return self._np is not None
 
     @property
+    def price_interval(self) -> dt.timedelta:
+        """Detect interval between price entries (e.g. 15min or 1h)."""
+        prices = self._all_prices
+        if len(prices) >= 2:
+            return prices[1]["start"] - prices[0]["start"]
+        return dt.timedelta(hours=1)
+
+    @property
+    def entries_per_hour(self) -> int:
+        """Number of price entries per hour (4 for 15-min, 1 for hourly)."""
+        interval_seconds = self.price_interval.total_seconds()
+        return max(1, int(3600 / interval_seconds))
+
+    @property
     def data_end(self) -> dt.datetime | None:
-        """End of available price data (last price start + 1h)."""
+        """End of available price data (last entry start + interval)."""
         prices = self._all_prices
         if prices:
-            return prices[-1]["start"] + dt.timedelta(hours=1)
+            return prices[-1]["start"] + self.price_interval
         return None
 
     @property
