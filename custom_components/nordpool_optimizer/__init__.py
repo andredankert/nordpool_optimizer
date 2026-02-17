@@ -357,17 +357,15 @@ class NordpoolOptimizer:
             ]
             _LOGGER.debug("Loaded %d completed past periods for %s", len(self._persistent_periods), self.device_name)
 
-        if cache_loaded:
-            _LOGGER.debug("Loaded cached price data for %s, running initial optimization", self.device_name)
-            # Run initial optimization with cached data (don't fetch new data)
-            self.update(force_price_update=False)
-        else:
-            _LOGGER.debug("No valid cache found for %s, fetching price data immediately", self.device_name)
-            # Try to fetch price data immediately so entities have data
-            try:
-                self.update(force_price_update=True)
-            except Exception as e:
-                _LOGGER.warning("Failed to fetch initial price data for %s: %s", self.device_name, e)
+        # Always fetch fresh price data to ensure tomorrow's prices are included.
+        # If the entity isn't ready yet, PricesEntity.update() keeps cached data as fallback.
+        try:
+            self.update(force_price_update=True)
+        except Exception as e:
+            _LOGGER.warning("Failed to fetch initial price data for %s: %s", self.device_name, e)
+            if cache_loaded:
+                _LOGGER.debug("Falling back to cached price data for %s", self.device_name)
+                self.update(force_price_update=False)
 
         if periods_cache_loaded:
             _LOGGER.debug("Loaded persistent periods cache for %s", self.device_name)
@@ -606,8 +604,9 @@ class NordpoolOptimizer:
         """Calculate optimal periods for absolute mode using 15-minute granularity."""
         periods = []
 
-        # Look ahead up to 48 hours for price data
-        end_time = now + dt.timedelta(hours=48)
+        # Look ahead up to 48 hours, capped at actual data availability
+        data_end = self._prices_entity.data_end
+        end_time = min(now + dt.timedelta(hours=48), data_end) if data_end else now + dt.timedelta(hours=48)
 
         # Check each 15-minute slot to see if it meets the threshold
         # Round current time to nearest 15-minute boundary
@@ -659,7 +658,9 @@ class NordpoolOptimizer:
         minutes = now.minute
         rounded_minutes = (minutes // 15) * 15
         earliest = now.replace(minute=rounded_minutes, second=0, microsecond=0)
-        search_end = now + dt.timedelta(hours=48)
+        # Cap at actual data availability to avoid phantom slots at the edge
+        data_end = self._prices_entity.data_end
+        search_end = min(now + dt.timedelta(hours=48), data_end) if data_end else now + dt.timedelta(hours=48)
 
         # Respect spacing from recently completed slots:
         # At this point self._persistent_periods only contains completed past
@@ -1135,6 +1136,14 @@ class PricesEntity:
     def valid(self) -> bool:
         """Get if data is valid."""
         return self._np is not None
+
+    @property
+    def data_end(self) -> dt.datetime | None:
+        """End of available price data (last price start + 1h)."""
+        prices = self._all_prices
+        if prices:
+            return prices[-1]["start"] + dt.timedelta(hours=1)
+        return None
 
     @property
     def _all_prices(self):
