@@ -437,53 +437,27 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         # Build price array with optimal period flags
         now = dt_util.now()
 
-        # Smart time range selection based on actual data availability
+        # Always provide a 3-day window: yesterday + today + tomorrow.
+        # This avoids the midnight shift problem where the chart would clip
+        # yesterday's data when tomorrow's prices haven't arrived yet (~13-14).
+        # The chart config uses a matching 3-day span starting from yesterday.
         all_prices = price_entity._all_prices
-        if not all_prices:
-            # Fallback if no price data
-            start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
-            end_time = start_time + dt.timedelta(days=1) - dt.timedelta(microseconds=1)
-            _LOGGER.debug("FALLBACK: No price data available, using today-only range")
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_time = today_start - dt.timedelta(days=1)
+        end_time = today_start + dt.timedelta(days=2)
+
+        if all_prices:
+            first_price_time = all_prices[0]["start"]
+            last_price_time = all_prices[-1]["start"]
+            _LOGGER.debug("Available price data: %d entries from %s to %s, "
+                         "display window: %s to %s",
+                         len(all_prices), first_price_time, last_price_time,
+                         start_time.strftime('%Y-%m-%d %H:%M'),
+                         end_time.strftime('%Y-%m-%d %H:%M'))
         else:
-            # Log what price data is actually available
-            if all_prices:
-                first_price_time = all_prices[0]["start"]
-                last_price_time = all_prices[-1]["start"]
-                _LOGGER.debug("Available price data: %d entries from %s to %s",
-                             len(all_prices), first_price_time, last_price_time)
-            # Check if we have sufficient tomorrow's data (at least 12 hours coverage)
-            tomorrow_start = now.replace(hour=0, minute=0, second=0, microsecond=0) + dt.timedelta(days=1)
-            tomorrow_end = tomorrow_start + dt.timedelta(days=1)
-
-            # Count hours of tomorrow data available
-            tomorrow_hours = set()
-            for price_data in all_prices:
-                price_time = price_data["start"]
-                if not isinstance(price_time, dt.datetime):
-                    price_time = dt_util.parse_datetime(price_time)
-
-                if price_time and tomorrow_start <= price_time < tomorrow_end:
-                    # Add the hour to our set
-                    tomorrow_hours.add(price_time.hour)
-
-            # Require at least 24 hours of tomorrow data for sufficient coverage (full day)
-            has_sufficient_tomorrow_data = len(tomorrow_hours) >= 24
-            _LOGGER.debug("Tomorrow data check: %d unique hours found: %s, sufficient: %s",
-                         len(tomorrow_hours), sorted(list(tomorrow_hours)) if tomorrow_hours else "none", has_sufficient_tomorrow_data)
-
-            if has_sufficient_tomorrow_data:
-                # Sufficient tomorrow data available: show today 00:00 to tomorrow 23:59
-                start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                end_time = start_time + dt.timedelta(days=2) - dt.timedelta(microseconds=1)
-                _LOGGER.debug("Time range: TODAY-TOMORROW (sufficient data) from %s to %s",
-                             start_time.strftime('%Y-%m-%d %H:%M'), end_time.strftime('%Y-%m-%d %H:%M'))
-            else:
-                # Insufficient tomorrow data: show yesterday + today
-                today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                start_time = today_start - dt.timedelta(days=1)
-                end_time = today_start + dt.timedelta(days=1) - dt.timedelta(microseconds=1)
-                _LOGGER.debug("Time range: YESTERDAY-TODAY (insufficient tomorrow data) from %s to %s",
-                             start_time.strftime('%Y-%m-%d %H:%M'), end_time.strftime('%Y-%m-%d %H:%M'))
+            _LOGGER.debug("No price data available, using 3-day window: %s to %s",
+                         start_time.strftime('%Y-%m-%d %H:%M'),
+                         end_time.strftime('%Y-%m-%d %H:%M'))
         prices_ahead = []
         optimal_periods = []
 
@@ -627,7 +601,6 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
             "time_range": {
                 "start": start_time.isoformat(),
                 "end": end_time.isoformat(),
-                "tomorrow_data_available": has_sufficient_tomorrow_data if all_prices else False
             },
             "total_devices": len(optimizers),
             "chart_layout": {
