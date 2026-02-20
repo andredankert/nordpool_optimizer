@@ -24,6 +24,14 @@ series:
         .filter(item => !isNaN(item[0]) && !isNaN(item[1]) && isFinite(item[1]))
         .sort((a, b) => a[0] - b[0]);
 
+      // Compute 2-day display window based on actual data availability
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const tomorrowStart = todayStart + 86400000;
+      const hasTomorrow = uniquePrices.some(p => p[0] >= tomorrowStart);
+      window.__npMin = hasTomorrow ? todayStart : todayStart - 86400000;
+      window.__npMax = window.__npMin + 172800000;
+
       return uniquePrices;
     name: Price (kr/kWh)
     type: line
@@ -139,6 +147,19 @@ graph_span: 3d
 apex_config:
   chart:
     height: 350
+    events:
+      mounted: |
+        EVAL:function(chartContext, config) {
+          if (window.__npMin && window.__npMax) {
+            chartContext.zoomX(window.__npMin, window.__npMax);
+          }
+        }
+      updated: |
+        EVAL:function(chartContext, config) {
+          if (window.__npMin && window.__npMax) {
+            chartContext.zoomX(window.__npMin, window.__npMax);
+          }
+        }
   stroke:
     width: 3
   legend:
@@ -149,18 +170,6 @@ apex_config:
       }
   xaxis:
     type: datetime
-    min: |
-      EVAL:(function() {
-        var now = new Date();
-        var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        return now.getHours() < 13 ? today.getTime() - 86400000 : today.getTime();
-      })()
-    max: |
-      EVAL:(function() {
-        var now = new Date();
-        var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        return now.getHours() < 13 ? today.getTime() + 86400000 : today.getTime() + 172800000;
-      })()
   yaxis:
     title:
       text: Price (kr/kWh)
