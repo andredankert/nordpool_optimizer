@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import pickle
 import time
+from pathlib import Path
 from typing import Dict, Set
 
 from homeassistant.components.sensor import (
@@ -374,6 +376,12 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         # Price history buffer: retains prices across midnight when Nordpool
         # drops yesterday's raw_today.  Keyed by ISO timestamp string.
         self._price_history: dict[str, dict] = {}
+        self._price_cache_file = (
+            Path(hass.config.config_dir)
+            / "custom_components" / "nordpool_optimizer" / "cache"
+            / "price_history.pkl"
+        )
+        self._load_price_history()
 
     @property
     def native_value(self) -> float | None:
@@ -461,6 +469,9 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
             k: v for k, v in self._price_history.items()
             if v["start"] >= cutoff
         }
+
+        # Persist to disk so yesterday's prices survive restarts
+        self._save_price_history()
 
         # Display window: yesterday + today + tomorrow
         start_time = today_start - dt.timedelta(days=1)
@@ -625,6 +636,41 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
                 "base_offset": -0.05
             }
         }
+
+    # ------------------------------------------------------------------
+    # Price history persistence
+    # ------------------------------------------------------------------
+
+    def _load_price_history(self) -> None:
+        """Load price history from disk cache."""
+        if not self._price_cache_file.exists():
+            return
+        try:
+            with open(self._price_cache_file, "rb") as fh:
+                data = pickle.load(fh)
+            if not isinstance(data, dict):
+                return
+            # Re-key and validate entries
+            now = dt_util.now()
+            cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0) - dt.timedelta(days=2)
+            for key, entry in data.items():
+                if isinstance(entry, dict) and isinstance(entry.get("start"), dt.datetime):
+                    if entry["start"] >= cutoff:
+                        self._price_history[key] = entry
+            _LOGGER.debug("Loaded %d price history entries from cache", len(self._price_history))
+        except Exception:
+            _LOGGER.debug("Could not load price history cache, starting fresh")
+
+    def _save_price_history(self) -> None:
+        """Save price history to disk cache."""
+        try:
+            self._price_cache_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._price_cache_file.with_suffix(".tmp")
+            with open(tmp, "wb") as fh:
+                pickle.dump(self._price_history, fh)
+            tmp.replace(self._price_cache_file)
+        except Exception:
+            _LOGGER.debug("Could not save price history cache")
 
     def _get_all_optimizers(self) -> list[NordpoolOptimizer]:
         """Get all optimizer instances and auto-register with new ones."""
