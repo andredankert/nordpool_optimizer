@@ -371,6 +371,9 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         self._attr_device_class = SensorDeviceClass.MONETARY
         self._attr_native_unit_of_measurement = None  # Will be set from price data
         self._minutely_update = None
+        # Price history buffer: retains prices across midnight when Nordpool
+        # drops yesterday's raw_today.  Keyed by ISO timestamp string.
+        self._price_history: dict[str, dict] = {}
 
     @property
     def native_value(self) -> float | None:
@@ -437,53 +440,66 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         # Build price array with optimal period flags
         now = dt_util.now()
 
-        # Always provide a 3-day window: yesterday + today + tomorrow.
-        # This avoids the midnight shift problem where the chart would clip
-        # yesterday's data when tomorrow's prices haven't arrived yet (~13-14).
-        # The chart config uses a matching 3-day span starting from yesterday.
-        all_prices = price_entity._all_prices
+        # Accumulate prices into our history buffer so yesterday's data
+        # survives past midnight (the Nordpool entity drops raw_today at midnight).
+        live_prices = price_entity._all_prices
+        for price_data in (live_prices or []):
+            price_time = price_data["start"]
+            if not isinstance(price_time, dt.datetime):
+                price_time = dt_util.parse_datetime(price_time)
+            if price_time:
+                key = price_time.isoformat()
+                self._price_history[key] = {
+                    "start": price_time,
+                    "value": price_data["value"],
+                }
+
+        # Prune entries older than 3 days to keep memory bounded
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        cutoff = today_start - dt.timedelta(days=2)
+        self._price_history = {
+            k: v for k, v in self._price_history.items()
+            if v["start"] >= cutoff
+        }
+
+        # Display window: yesterday + today + tomorrow
         start_time = today_start - dt.timedelta(days=1)
         end_time = today_start + dt.timedelta(days=2)
 
+        # Build all_prices from history buffer (contains yesterday even after midnight)
+        all_prices = sorted(self._price_history.values(), key=lambda p: p["start"])
+
         if all_prices:
-            first_price_time = all_prices[0]["start"]
-            last_price_time = all_prices[-1]["start"]
-            _LOGGER.debug("Available price data: %d entries from %s to %s, "
+            _LOGGER.debug("Price history buffer: %d entries from %s to %s, "
                          "display window: %s to %s",
-                         len(all_prices), first_price_time, last_price_time,
+                         len(all_prices),
+                         all_prices[0]["start"].strftime('%Y-%m-%d %H:%M'),
+                         all_prices[-1]["start"].strftime('%Y-%m-%d %H:%M'),
                          start_time.strftime('%Y-%m-%d %H:%M'),
                          end_time.strftime('%Y-%m-%d %H:%M'))
         else:
-            _LOGGER.debug("No price data available, using 3-day window: %s to %s",
-                         start_time.strftime('%Y-%m-%d %H:%M'),
-                         end_time.strftime('%Y-%m-%d %H:%M'))
-        prices_ahead = []
-        optimal_periods = []
+            _LOGGER.debug("No price data in history buffer")
 
-        # Get all prices within time range
-        all_prices = price_entity._all_prices
         if not all_prices:
             return {"error": "No price data available"}
 
-        # Check if we have the data we need for the calculated time range
-        if all_prices:
-            available_start = min(price["start"] if isinstance(price["start"], dt.datetime)
-                                else dt_util.parse_datetime(price["start"]) for price in all_prices)
-            available_end = max(price["start"] if isinstance(price["start"], dt.datetime)
-                              else dt_util.parse_datetime(price["start"]) for price in all_prices)
+        prices_ahead = []
+        optimal_periods = []
 
-            _LOGGER.debug("Available price data spans: %s to %s",
-                         available_start.strftime('%Y-%m-%d %H:%M'),
-                         available_end.strftime('%Y-%m-%d %H:%M'))
+        available_start = all_prices[0]["start"]
+        available_end = all_prices[-1]["start"]
 
-            # If we need data before what's available, adjust the start time
-            if start_time < available_start:
-                old_start = start_time
-                start_time = available_start
-                _LOGGER.debug("Adjusted start time from %s to %s (data not available)",
-                             old_start.strftime('%Y-%m-%d %H:%M'),
-                             start_time.strftime('%Y-%m-%d %H:%M'))
+        _LOGGER.debug("Available price data spans: %s to %s",
+                     available_start.strftime('%Y-%m-%d %H:%M'),
+                     available_end.strftime('%Y-%m-%d %H:%M'))
+
+        # If we need data before what's available, adjust the start time
+        if start_time < available_start:
+            old_start = start_time
+            start_time = available_start
+            _LOGGER.debug("Adjusted start time from %s to %s (data not available)",
+                         old_start.strftime('%Y-%m-%d %H:%M'),
+                         start_time.strftime('%Y-%m-%d %H:%M'))
 
         # Build unique price data with optimal device info
         price_map = {}  # Use dict to avoid duplicates by timestamp
