@@ -346,16 +346,17 @@ class NordpoolOptimizer:
         # Try to load cached price data first for immediate availability
         cache_loaded = self._prices_entity.load_cache()
 
-        # Load period cache to preserve completed past periods (needed for spacing).
-        # Future planned periods will be cleared and recalculated by update().
+        # Load period cache to preserve completed and active periods (needed for
+        # spacing).  Future planned periods will be cleared and recalculated by update().
         periods_cache_loaded = self.load_period_cache()
         if periods_cache_loaded:
             now = dt_util.now()
             self._persistent_periods = [
                 p for p in self._persistent_periods
-                if p.status == "completed" and p.end_time < now
+                if (p.status == "completed" and p.end_time < now)
+                or (p.status == "active" and p.start_time <= now < p.end_time)
             ]
-            _LOGGER.debug("Loaded %d completed past periods for %s", len(self._persistent_periods), self.device_name)
+            _LOGGER.debug("Loaded %d completed/active periods for %s", len(self._persistent_periods), self.device_name)
 
         # Always fetch fresh price data to ensure tomorrow's prices are included.
         # If the entity isn't ready yet, PricesEntity.update() keeps cached data as fallback.
@@ -536,20 +537,22 @@ class NordpoolOptimizer:
             if self._check_configuration_changed():
                 self._handle_configuration_change(now)
 
-            # Clear ALL future periods before recalculation (not just planned ones)
-            # This ensures we recalculate with current configuration
+            # Clear future planned periods before recalculation, but preserve
+            # active (running) periods so they aren't disrupted mid-cycle and
+            # their end-times feed into the spacing logic that prevents
+            # back-to-back scheduling.
             initial_period_count = len(self._persistent_periods)
             self._clear_future_periods(now)
-            # Also clear any active/planned periods that might conflict with new config
-            # Keep only completed periods that are fully in the past
             self._persistent_periods = [
                 period for period in self._persistent_periods
-                if period.status == "completed" and period.end_time < now
+                if (period.status == "completed" and period.end_time < now)
+                or period.status == "active"
             ]
             cleared_count = initial_period_count - len(self._persistent_periods)
             if cleared_count > 0:
-                _LOGGER.debug("Cleared %d periods total (including active/planned) for %s before recalculation",
-                             cleared_count, self.device_name)
+                _LOGGER.debug("Cleared %d planned/future periods for %s (kept %d active + completed)",
+                             cleared_count, self.device_name,
+                             len(self._persistent_periods))
 
             # Calculate ALL optimal periods from now until end of available data
             new_periods = self._calculate_all_periods(now)
@@ -675,16 +678,15 @@ class NordpoolOptimizer:
             len(self._prices_entity._all_prices),
         )
 
-        # Respect spacing from recently completed slots:
-        # At this point self._persistent_periods only contains completed past
-        # periods (cleared by update() before calling _calculate_all_periods).
+        # Respect spacing from completed and active slots to prevent
+        # back-to-back runs (active periods are preserved by update()).
         if self._persistent_periods:
             last_end = max(p.end_time for p in self._persistent_periods)
             spacing_boundary = last_end + min_gap
             if spacing_boundary > earliest:
                 earliest = spacing_boundary
                 _LOGGER.info(
-                    "[%s] Spacing from last completed slot pushes earliest to %s",
+                    "[%s] Spacing from last active/completed slot pushes earliest to %s",
                     self.device_name, earliest.strftime('%Y-%m-%d %H:%M'))
 
         while earliest + duration_td <= search_end:
