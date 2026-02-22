@@ -149,6 +149,19 @@ apex_config:
     height: 350
     animations:
       enabled: false
+    events:
+      mounted: |
+        EVAL:function(chartContext, config) {
+          if (window.__npMin && window.__npMax) {
+            chartContext.zoomX(window.__npMin, window.__npMax);
+          }
+        }
+      updated: |
+        EVAL:function(chartContext, config) {
+          if (window.__npMin && window.__npMax) {
+            chartContext.zoomX(window.__npMin, window.__npMax);
+          }
+        }
   stroke:
     width: 3
   legend:
@@ -159,8 +172,6 @@ apex_config:
       }
   xaxis:
     type: datetime
-    min: EVAL:window.__npMin
-    max: EVAL:window.__npMax
   yaxis:
     title:
       text: Price (kr/kWh)
