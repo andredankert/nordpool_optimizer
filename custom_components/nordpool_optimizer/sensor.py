@@ -339,6 +339,11 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
         start_time = today_start - dt.timedelta(days=1)
         end_time = today_start + dt.timedelta(days=2)
 
+        # Keep the full window for period filtering (past completed periods
+        # should always show, even if price data doesn't go back that far)
+        period_window_start = start_time
+        period_window_end = end_time
+
         # Build all_prices from history buffer (contains yesterday even after midnight)
         all_prices = sorted(self._price_history.values(), key=lambda p: p["start"])
 
@@ -430,11 +435,11 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
             # Collect periods for this device from persistent storage
             device_optimal_periods = []
 
-            # Include persistent periods that fall within our time window
+            # Include persistent periods that fall within the full display window
+            # (not narrowed by price data availability)
             if hasattr(optimizer, '_persistent_periods'):
                 for period in optimizer._persistent_periods:
-                    # Include periods that overlap with our display time window
-                    if period.start_time < end_time and period.end_time > start_time:
+                    if period.start_time < period_window_end and period.end_time > period_window_start:
                         device_optimal_periods.append({
                             "start": period.start_time.isoformat(),
                             "end": period.end_time.isoformat(),
@@ -444,7 +449,7 @@ class NordpoolOptimizerPriceGraphEntity(SensorEntity):
             else:
                 # Fallback to current_optimal_periods for backwards compatibility
                 for period in optimizer._current_optimal_periods:
-                    if period.start_time < end_time and period.end_time > now:
+                    if period.start_time < period_window_end and period.end_time > now:
                         device_optimal_periods.append({
                             "start": period.start_time.isoformat(),
                             "end": period.end_time.isoformat(),
