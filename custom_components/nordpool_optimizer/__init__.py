@@ -59,7 +59,7 @@ PLATFORMS = [Platform.SENSOR]
 
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
     """Set up this integration using UI."""
-    config_entry.async_on_unload(config_entry.add_update_listener(async_reload_entry))
+    config_entry.async_on_unload(config_entry.add_update_listener(async_on_config_update))
 
     if DOMAIN not in hass.data:
         hass.data[DOMAIN] = {}
@@ -84,30 +84,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
             )
             return False
 
-    # Before setting up platforms, ensure any existing entities are removed
-    # This prevents "already been setup" errors during reload
-    from homeassistant.helpers import entity_registry as er
-    entity_registry = er.async_get(hass)
-    
-    # Find and remove any existing entities for this config entry
-    existing_entities = [
-        entity_id for entity_id, entity in entity_registry.entities.items()
-        if entity.config_entry_id == config_entry.entry_id
-    ]
-    if existing_entities:
-        _LOGGER.debug("Removing %d existing entities for entry %s before setup", 
-                     len(existing_entities), config_entry.entry_id)
-        for entity_id in existing_entities:
-            try:
-                entity_registry.async_remove(entity_id)
-            except Exception as e:
-                _LOGGER.debug("Failed to remove entity %s: %s", entity_id, e)
-    
-    # Small delay to ensure entity removal completes
-    import asyncio
-    await asyncio.sleep(0.1)
-    
-    # Now set up platforms
+    # Set up sensor platforms
     await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
     
     # Trigger update immediately after entities are set up
@@ -193,36 +170,29 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return False
 
 
-async def async_reload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
-    """Reload the config entry - completely remove old and create new."""
-    _LOGGER.info("Reloading optimizer entry: %s (device: %s)", 
-                 config_entry.entry_id, config_entry.data.get(CONF_DEVICE_NAME, 'unknown'))
-    
-    from homeassistant.config_entries import ConfigEntryState
-    
-    # Clean up optimizer first (always do this)
-    if DOMAIN in hass.data and config_entry.entry_id in hass.data[DOMAIN]:
-        optimizer = hass.data[DOMAIN].pop(config_entry.entry_id)
-        optimizer.cleanup()
-        _LOGGER.debug("Cleaned up optimizer for entry: %s", config_entry.entry_id)
-    
-    # Note: async_update_reload_and_abort calls async_unload_entry internally
-    # Our async_unload_entry now handles the "never loaded" case gracefully
-    # So we don't need to do anything special here - just set up fresh
-    
-    # Small delay to ensure cleanup completes
-    import asyncio
-    await asyncio.sleep(0.2)
-    
-    # Now set up fresh - this will create a completely new optimizer instance
-    # async_setup_entry will handle creating the optimizer and setting up platforms
+async def async_on_config_update(hass: HomeAssistant, config_entry: ConfigEntry) -> None:
+    """Apply config changes to the existing optimizer in-place (no reload)."""
+    optimizer = hass.data.get(DOMAIN, {}).get(config_entry.entry_id)
+    if not optimizer:
+        _LOGGER.warning("No optimizer found for entry %s during config update", config_entry.entry_id)
+        return
+
+    _LOGGER.info("Applying config update for %s (entry: %s)",
+                 optimizer.device_name, config_entry.entry_id)
+
     try:
-        await async_setup_entry(hass, config_entry)
-        _LOGGER.info("Reload completed successfully for optimizer entry: %s", config_entry.entry_id)
+        optimizer.apply_config(config_entry)
+        # Recalculate with new settings (update() detects config change via hash)
+        await hass.async_add_executor_job(optimizer.update, True)
     except Exception as e:
-        _LOGGER.error("Failed to set up entry after reload: %s", e, exc_info=True)
-        # Re-raise to let Home Assistant handle it
-        raise
+        _LOGGER.error("Failed to apply config update: %s", e, exc_info=True)
+
+    # Always notify entities to refresh their state (even on error)
+    for listener in list(optimizer._output_listeners.values()):
+        try:
+            listener.schedule_update_ha_state()
+        except Exception as e:
+            _LOGGER.warning("Failed to notify entity after config update: %s", e)
 
 
 
@@ -340,6 +310,45 @@ class NordpoolOptimizer:
         """Refresh cached fee settings from config entries."""
         self._cached_fee_settings = self._get_initial_fee_settings()
         _LOGGER.debug("Refreshed fee settings for %s: %s", self.device_name, self._cached_fee_settings)
+
+    def apply_config(self, config_entry: ConfigEntry) -> None:
+        """Apply updated configuration in-place without restart."""
+        _LOGGER.info("Applying config update in-place for %s", self.device_name)
+        self._config = config_entry
+
+        # Update all config-derived attributes
+        self.device_name = config_entry.data[CONF_DEVICE_NAME]
+        self.mode = config_entry.data[CONF_MODE]
+        self.duration = config_entry.data[CONF_DURATION]
+        self.price_threshold = config_entry.data.get(CONF_PRICE_THRESHOLD)
+        self.slot_type = config_entry.data.get(CONF_SLOT_TYPE, CONF_SLOT_TYPE_CONSECUTIVE)
+        self.time_window_enabled = config_entry.data.get(CONF_TIME_WINDOW_ENABLED, False)
+        self.time_window = config_entry.data.get(CONF_TIME_WINDOW, "")
+
+        # Handle price entity change: re-register state listeners
+        new_price_id = config_entry.data[CONF_PRICES_ENTITY]
+        if new_price_id != self._prices_entity.unique_id:
+            _LOGGER.info("Price entity changed from %s to %s, re-registering listeners",
+                        self._prices_entity.unique_id, new_price_id)
+            for listener in self._state_change_listeners:
+                listener()
+            self._state_change_listeners.clear()
+            self._prices_entity = PricesEntity(new_price_id, self._hass, self)
+            self._state_change_listeners.append(
+                async_track_state_change_event(
+                    self._hass, [new_price_id], self._on_price_entity_change
+                )
+            )
+
+        # Refresh fee settings (picks up options flow changes)
+        self.refresh_fee_settings()
+
+        # Update period cache file path in case device_name changed
+        self._period_cache_file = (
+            Path(self._hass.config.config_dir) / "custom_components"
+            / "nordpool_optimizer" / "cache"
+            / f"periods_{self.device_name.replace(' ', '_').lower()}.pkl"
+        )
 
     async def async_setup(self):
         """Post initialization setup."""

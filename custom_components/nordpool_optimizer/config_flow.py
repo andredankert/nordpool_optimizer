@@ -339,10 +339,14 @@ class NordpoolOptimizerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Handle reconfiguration of the config entry."""
         if user_input is not None:
             config_entry = self._get_reconfigure_entry()
-            return self.async_update_reload_and_abort(
+            # Update entry data in-place; the update listener
+            # (async_on_config_update) applies it to the live optimizer
+            # without destroying entities.
+            self.hass.config_entries.async_update_entry(
                 config_entry,
-                data_updates=user_input,
+                data={**config_entry.data, **user_input},
             )
+            return self.async_abort(reason="reconfigure_successful")
 
         config_entry = self._get_reconfigure_entry()
 

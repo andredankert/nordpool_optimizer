@@ -61,7 +61,8 @@
             "invalid_end_time": "Invalid end time format"
         },
         "abort": {
-            "already_configured": "Device with this name and price entity is already configured"
+            "already_configured": "Device with this name and price entity is already configured",
+            "reconfigure_successful": "Configuration updated successfully"
         }
     },
     "options": {
